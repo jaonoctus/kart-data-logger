@@ -2,6 +2,13 @@
 #include "esp_task_wdt.h"   // display-wedge safety net (used throughout)
 #include "esp_system.h"     // esp_reset_reason
 
+// QSPI flush telemetry from lib/DisplayBSP/lv_port.c (C linkage). Reported once a
+// second below via log_w so it surfaces at CORE_DEBUG_LEVEL=WARN.
+extern "C" {
+    extern volatile uint32_t lvgl_port_frame_drops;
+    extern volatile uint32_t lvgl_port_max_stall_us;
+}
+
 // Library includes from our new /lib folder
 #include "EspNowManager.h"
 #include "LogManager.h"
@@ -146,7 +153,7 @@ static void displayWdtInit() {
     esp_task_wdt_config_t twdt = {};
     twdt.timeout_ms     = DISPLAY_WDT_TIMEOUT_MS;
     twdt.idle_core_mask = 0;
-    twdt.trigger_panic  = true;
+    twdt.trigger_panic  = true;   // a genuine loopTask wedge -> fast auto-reset
     if (esp_task_wdt_reconfigure(&twdt) != ESP_OK) {
         esp_task_wdt_init(&twdt);   // not yet initialized by the Arduino core
     }
@@ -318,6 +325,12 @@ void setup() {
     delay(2000);
 #endif
     Serial.setDebugOutput(true);
+#if ARDUINO_USB_CDC_ON_BOOT == 1
+    // Non-blocking USB-CDC TX: with no host draining the port (the normal case in
+    // the kart), the CDC buffer fills and log_*() would otherwise BLOCK the calling
+    // task — freezing the dash until a serial monitor reconnects. Drop instead.
+    Serial.setTxTimeoutMs(0);
+#endif
 
     log_i("--- KART DISPLAY BOOTING ---");
 
@@ -485,6 +498,20 @@ void loop() {
         lastMessageCount = 0;
         if (pps != lastPps) pps = lastPps;
         lastPPSUpdate = now;
+
+        // QSPI flush health: report dropped frames and the worst bus-idle wait in
+        // the last second, then reset the stall high-water mark. A blink should line
+        // up with either a frame_drops increment (hard skip) or a high max_stall.
+        static uint32_t lastFrameDrops = 0;
+        uint32_t drops = lvgl_port_frame_drops;
+        uint32_t stallUs = lvgl_port_max_stall_us;
+        lvgl_port_max_stall_us = 0;
+        if (drops != lastFrameDrops || stallUs >= 8000) {
+            log_w("[DISP] frame_drops=%lu (+%lu)  max_bus_stall=%lu us",
+                  (unsigned long)drops, (unsigned long)(drops - lastFrameDrops),
+                  (unsigned long)stallUs);
+            lastFrameDrops = drops;
+        }
 
 #if defined(ENABLE_IMU)
         if (imuReady) {
