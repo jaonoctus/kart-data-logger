@@ -90,7 +90,10 @@
  * - LV_OS_WINDOWS
  * - LV_OS_MQX
  * - LV_OS_CUSTOM */
-#define LV_USE_OS LV_OS_FREERTOS
+/* Single-threaded rendering to match the manufacturer's LVGL-8 demo: with an OS
+ * set, LVGL 9 renders in a separate draw thread that overlaps the flush DMA and
+ * wedges the QSPI panel write. LV_OS_NONE makes render+flush sequential. */
+#define LV_USE_OS LV_OS_NONE
 
 #if LV_USE_OS == LV_OS_CUSTOM
     #define LV_OS_CUSTOM_INCLUDE <stdint.h>
