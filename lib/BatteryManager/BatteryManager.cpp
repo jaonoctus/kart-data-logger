@@ -19,7 +19,7 @@ void BatteryManager::begin() {
 float BatteryManager::getVoltage() {
     if (_dividerEnablePin != 0xFF) {
         digitalWrite(_dividerEnablePin, HIGH);
-        delay(5);
+        delay(1000);
     }
 
     uint32_t sumMv = 0;
