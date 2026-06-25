@@ -114,8 +114,11 @@ void AudioManager::audioTask(void* parameter) {
         }
 
         // Critical for Core 0 stability
-        vTaskDelay(pdMS_TO_TICKS(1)); 
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
+
+    self->_audio.stopSong();
+    vTaskDelete(NULL);
 }
 
 bool AudioManager::tryQueueAudio(const char* filename) {
