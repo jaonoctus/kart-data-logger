@@ -5,6 +5,7 @@
 #include "GpsManager.h"
 #endif
 #include <esp_sleep.h>
+#include "driver/rtc_io.h"
 
 #if !defined(USE_FAKE_GPS)
 extern GpsManager gps;
@@ -25,14 +26,21 @@ void PowerManager::begin() {
     digitalWrite(_peripheralEnablePin, HIGH);
 
     pinMode(_offButtonPin, INPUT_PULLUP);
+
+    // Only swallow the first press if we were woken by the button being held,
+    // so a normal power-on lets the first press-and-hold shut down.
+    _ignoreInitialBootPress =
+        (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0);
 }
 
 void PowerManager::update(int batteryPercentage) {
-    if (batteryPercentage < 5.0f) {
-        log_w("Battery critically low: %.1f%%", batteryPercentage);
-    } else if (batteryPercentage <= _minBatteryPercent) {
-        log_w("Battery below threshold: %d%%. Entering hibernate.", batteryPercentage);
-        enterHibernate("low battery");
+    if (batteryPercentage > 0) {
+        if (batteryPercentage <= _minBatteryPercent) {
+            log_w("Battery below threshold: %d%%. Entering hibernate.", batteryPercentage);
+            enterHibernate("low battery");
+        } else if (batteryPercentage < 5.0f) {
+            log_w("Battery critically low: %.1f%%", batteryPercentage);
+        } 
     }
 
     bool currentButtonState = (digitalRead(_offButtonPin) == LOW);
@@ -74,7 +82,11 @@ void PowerManager::enterHibernate(const char *reason) {
     // Ensure the peripheral enable pin is LOW to cut power to sensors
     digitalWrite(_peripheralEnablePin, LOW);
 
-    // Configure Wake-up Sources
+    // Configure Wake-up Source. Hold the button pin HIGH via the RTC-domain
+    // pull-up (the INPUT_PULLUP set in begin() does NOT survive deep sleep), so
+    // a released button doesn't float LOW and self-wake.
+    rtc_gpio_pullup_en((gpio_num_t)_offButtonPin);
+    rtc_gpio_pulldown_dis((gpio_num_t)_offButtonPin);
     esp_sleep_enable_ext0_wakeup((gpio_num_t)_offButtonPin, LOW);
 
     // This will consume about 16uA

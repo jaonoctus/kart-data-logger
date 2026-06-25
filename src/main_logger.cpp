@@ -25,7 +25,7 @@
 #define PERIPHERAL_ENABLE_PIN D3
 #define GPS_RX RX
 #define GPS_TX TX
-#define OFF_BUTTON_PIN D8
+#define OFF_BUTTON_PIN D4
 #define BATT_ADC A9
 #define VDIV_ENABLE_PIN D10
 #define HOLD_TIME_MS 3000 // 3 seconds to turn off
