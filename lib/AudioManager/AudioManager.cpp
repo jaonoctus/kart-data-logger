@@ -1,10 +1,5 @@
 #include "AudioManager.h"
 
-// Bring in the global Mutex from main_logger.cpp
-#if defined(ENABLE_IMU)
-extern SemaphoreHandle_t hardwareBusMutex;
-#endif
-
 // Global semaphore for EOF signals
 SemaphoreHandle_t audioNextSem;
 
@@ -20,7 +15,8 @@ AudioManager::AudioManager(int bclkPin, int lrcPin, int dinPin)
 bool AudioManager::begin(LittleFSFS &fs, int volume) {
     _fs = &fs;
     _audio.setPinout(_bclk, _lrc, _din);
-    _audio.setVolume(volume);
+    _audio.setVolumeSteps(100);   // finer resolution than the default 0-21
+    _audio.setVolume(volume, 1);  // curve 1 = logarithmic taper (quieter low end)
 
     log_i("Audio: I2S Initialized (BCLK:%d, LRC:%d, DIN:%d)", _bclk, _lrc, _din);
 
@@ -80,14 +76,7 @@ void AudioManager::audioTask(void* parameter) {
     
     while (!self->_stopAudioTask) {
         // 1. SAFE AUDIO CHUNKING
-        #if defined(ENABLE_IMU)
-        if (xSemaphoreTake(hardwareBusMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-            self->_audio.loop();
-            xSemaphoreGive(hardwareBusMutex);
-        }
-        #else
         self->_audio.loop();
-        #endif
 
         // 2. QUEUE MANAGEMENT
         if (!self->_audio.isRunning()) {
@@ -135,18 +124,10 @@ bool AudioManager::tryQueueAudio(const char* filename) {
 }
 
 void AudioManager::playNextInQueue(String nextFile) {
-    #if defined(ENABLE_IMU)
-    if (xSemaphoreTake(hardwareBusMutex, portMAX_DELAY) == pdTRUE) {
-    #endif
-        _audio.stopSong(); 
-        log_d("Audio: Playing %s", nextFile.c_str());
-        
-        _audio.connecttoFS(*_fs, nextFile.c_str());
-        
-    #if defined(ENABLE_IMU)
-        xSemaphoreGive(hardwareBusMutex); 
-    }
-    #endif
+    _audio.stopSong();
+    log_d("Audio: Playing %s", nextFile.c_str());
+
+    _audio.connecttoFS(*_fs, nextFile.c_str());
 }
 
 bool AudioManager::isPlaying() {
@@ -154,5 +135,5 @@ bool AudioManager::isPlaying() {
 }
 
 void AudioManager::setVolume(int volume) {
-    _audio.setVolume(volume);
+    _audio.setVolume(volume, 1);  // 0-100 scale (see setVolumeSteps in begin)
 }

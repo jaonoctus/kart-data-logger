@@ -179,18 +179,25 @@ double Atgm336GpsProvider::getSpeed(float gForce, float gyroZ) {
         return 0.0;
     }
 
+#if defined(ENABLE_IMU)
     // --- LOW SPEED / PADDOCK WANDER REJECTION ---
     // If we are crawling, use the IMU to decide if we are actually moving
     if (raw < _minSpeedToMove) {
         bool imuActive = gForce > _imuDynGStop || fabsf(gyroZ) > _imuGyroZStop;
-        
+
         if (!imuActive) {
             // Force zero. We are sitting in the pits.
             _speedFiltered = 0.0;
             _moveCounter = 0;
-            return 0.0; 
+            return 0.0;
         }
     }
+#else
+    // No IMU: can't distinguish paddock jitter from a slow crawl, so trust raw
+    // GPS speed. Stationary noise may show a small phantom speed.
+    (void)gForce;
+    (void)gyroZ;
+#endif
 
     // --- HIGH SPEED / TRACK MODE ---
     // At track speeds, raw VTG doppler speed is cleaner than an EMA filter.
