@@ -16,10 +16,6 @@ extern void ui_statusbarscreen_screen_destroy(void);
 extern lv_obj_t *ui_statusbarscreen;
 extern void ui_event_panelstatus( lv_event_t * e);
 extern lv_obj_t *ui_panelstatus;
-extern lv_obj_t *ui_panelhelmet;
-extern lv_obj_t *ui_labeliconhelmet;
-extern lv_obj_t *ui_labeltaghelmet;
-extern lv_obj_t *ui_labelvarhelmet;
 extern lv_obj_t *ui_paneldisplay;
 extern lv_obj_t *ui_labelicondisplay;
 extern lv_obj_t *ui_labeltagdisplay;
@@ -28,10 +24,6 @@ extern lv_obj_t *ui_panelgps;
 extern lv_obj_t *ui_labelicongps;
 extern lv_obj_t *ui_labeltaggps;
 extern lv_obj_t *ui_labelvargps;
-extern lv_obj_t *ui_panelesp;
-extern lv_obj_t *ui_labeliconesp;
-extern lv_obj_t *ui_labeltagesp;
-extern lv_obj_t *ui_labelvaresp;
 // CUSTOM VARIABLES
 
 #ifdef __cplusplus

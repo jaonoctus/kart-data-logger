@@ -20,7 +20,7 @@ The primary part is `Display.f3d`. The other models were created to build the as
 * The display board is held in place by small pegs that fit into matching bosses in the enclosure.
 * The back cover is pressed onto the display body by rear cover pegs and then bolted in place.
 * The back cover uses eight `M3X3X5` heat inserts and eight `M3x6` bolts.
-* The helmet GPS enclosure uses four `M2.5x6mm` bolts and four `M2.5x4x4mm` heat inserts.
+* The GPS enclosure uses four `M2.5x6mm` bolts and four `M2.5x4x4mm` heat inserts.
 * The GPS holder fits the ATGM336 module and a `25x25mm` antenna.
 
 ## Battery and charging

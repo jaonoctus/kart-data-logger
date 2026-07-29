@@ -17,9 +17,10 @@ enum MsgType : uint8_t {
     MSG_TRACK_CONFIG      = 0x40   // Display -> Logger: active finish line
 };
 
-// 2. The Core Data Struct (The "Contract" between boards)
-// Using fixed-width types (float/uint32_t) ensures 
-// both ESP32s see the exact same byte alignment.
+// 2. The Core Data Struct
+// The display assembles one of these per GPS fix and passes it to the UI, the
+// lap manager and the SD log task. Fixed-width types are kept so the layout
+// stays stable across builds.
 struct __attribute__((packed)) TelemetryMsg {
     uint8_t type;         // MsgType
     float speedKmph;
@@ -32,8 +33,6 @@ struct __attribute__((packed)) TelemetryMsg {
     uint8_t sats;
     uint8_t hasFix;
     uint64_t timestamp;
-    uint8_t helmetBattery;
-    bool usedFreshImu;
     float steeringAngle;  // Steering wheel angle in degrees
 };
 

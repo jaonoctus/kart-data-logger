@@ -10,13 +10,13 @@ extern "C" {
 }
 
 // Library includes from our new /lib folder
-#include "EspNowManager.h"
 #include "LogManager.h"
 #include "EspNowProtocol.h"
 #include "uiHelper.h"
 #include "BatteryManager.h"
 #include "ConfigManager.h"
 #include "LapManager.h"
+#include "GpsManager.h"
 
 #if defined(ENABLE_IMU)
 #include "ImuManager.h"
@@ -26,26 +26,19 @@ extern "C" {
 #define I2C_SCL 17
 #endif
 
-#ifndef HAS_HELMET
-#include "GpsManager.h"
-#endif
-
-#if defined(GPS_PROVIDER_ATGM336)
-const uint8_t expectedPps = 10;
-#else
-const uint8_t expectedPps = 5;
-#endif
-
-const uint8_t timeBetweenImuUplinkMessages = 10; // ms between IMU reads/uplink (100 Hz)
+const uint8_t timeBetweenImuReads = 10; // ms between IMU reads (100 Hz)
 
 // --- GLOBAL STATE ---
 LogManager logManager;
 UiHelper   uiHelper;
 LapManager lapManager;
 
-#ifndef HAS_HELMET
 GpsManager gps(GPS_STANDALONE_RX, GPS_STANDALONE_TX);
-#endif
+
+// Latest assembled telemetry frame. Written by loop() from the local GPS (plus
+// IMU when enabled), consumed by syncUI() for the dashboard and the SD log.
+static TelemetryMsg telemetry = {};
+static bool newTelemetryAvailable = false;
 
 #if defined(ENABLE_IMU)
 ImuManager imu;
@@ -66,70 +59,10 @@ static uint32_t lastDisplayBattReadMs = 0;
 float displaySpeed = 0;
 float targetSpeed = 0;
 const float lerpFactor = 0.20f;
-uint32_t lastMessageCount = 0;
-uint32_t pps = 0;
-uint32_t lastPPSUpdate = 0;
-#ifdef HAS_HELMET
-uint8_t helmetBatteryCurrentLevel = 255;
-#endif
+static uint32_t lastHealthReportMs = 0;
 
-// Lap state — updated inside syncUI(), consumed in loop() after the display lock
-static bool     s_lapCompletedPending = false;
-static LapCompletedMsg s_pendingLapMsg = {};
-static uint8_t  s_lapCount = 0;
-
-#ifdef HAS_HELMET
-// Error log transfer state (logger -> display -> SD)
-static bool errorLogReceiving = false;
-static uint16_t errorLogExpectedLines = 0;
-static uint16_t errorLogWrittenLines = 0;
-static bool errorLogWriteFailed = false;
-
-static void processIncomingErrorLog() {
-    uint16_t totalLines = 0;
-    if (EspNowManager::consumeErrorLogStart(totalLines)) {
-        errorLogReceiving = true;
-        errorLogExpectedLines = totalLines;
-        errorLogWrittenLines = 0;
-        errorLogWriteFailed = false;
-
-        if (!logManager.beginHelmetErrorLog()) {
-            errorLogWriteFailed = true;
-            log_w("Error log start failed in LogManager.");
-        }
-
-        log_i("Receiving helmet_error.log with %u lines.", totalLines);
-    }
-
-    ErrorLogLineMsg lineMsg = {};
-    while (EspNowManager::popErrorLogLine(lineMsg)) {
-        esp_task_wdt_reset(); // SD writes here run on loopTask; keep the WDT fed
-        if (!errorLogReceiving || errorLogWriteFailed) {
-            continue;
-        }
-
-        if (!logManager.appendHelmetErrorLine(lineMsg.lineData)) {
-            errorLogWriteFailed = true;
-            log_w("Error log line write failed in LogManager.");
-            continue;
-        }
-
-        errorLogWrittenLines++;
-    }
-
-    if (EspNowManager::consumeErrorLogEnd(totalLines)) {
-        uint16_t dropped = EspNowManager::getErrorLogDroppedLines();
-        bool acked = errorLogReceiving &&
-                     logManager.finalizeHelmetErrorLogAndAck(errorLogExpectedLines, errorLogWrittenLines, dropped, errorLogWriteFailed);
-
-        if (!acked) {
-            log_w("Error log incomplete. expected=%u written=%u dropped=%u", errorLogExpectedLines, errorLogWrittenLines, dropped);
-        }
-
-        errorLogReceiving = false;
-    }
-}
-#endif // HAS_HELMET
+// Lap state — updated inside syncUI()
+static uint8_t s_lapCount = 0;
 
 // ============================================================================
 // DISPLAY-WEDGE SAFETY NET (ALWAYS ON) - "indestructible" recovery.
@@ -187,9 +120,9 @@ extern "C" void ui_helper_apply_finish_line(double ll, double ln, double rl, dou
 }
 
 extern "C" bool ui_helper_get_gps(double *lat, double *lon) {
-    if (!EspNowManager::lastTelemetry.hasFix) return false;
-    *lat = EspNowManager::lastTelemetry.lat;
-    *lon = EspNowManager::lastTelemetry.lng;
+    if (!telemetry.hasFix) return false;
+    *lat = telemetry.lat;
+    *lon = telemetry.lng;
     return true;
 }
 
@@ -220,35 +153,28 @@ extern "C" void ui_helper_stop_session() {
 
 void syncUI() {
     bsp_display_lock(0);
-    // 1. Get data from Radio
-    if (EspNowManager::newDataAvailable) {
-        EspNowManager::newDataAvailable = false;
+    // 1. Consume the latest locally assembled telemetry frame
+    if (newTelemetryAvailable) {
+        newTelemetryAvailable = false;
 
         // Inject current steering angle before logging/processing
 #if defined(ENABLE_IMU)
         if (imuReady) {
-            EspNowManager::lastTelemetry.steeringAngle = calibManager.getSteeringAngle();
-
-            uiHelper.setGx(EspNowManager::lastTelemetry.gForceX);
-            uiHelper.setGy(EspNowManager::lastTelemetry.gForceY);
+            telemetry.steeringAngle = calibManager.getSteeringAngle();
         }
-#else
-        uiHelper.setGx(EspNowManager::lastTelemetry.gForceX);
-        uiHelper.setGy(EspNowManager::lastTelemetry.gForceY);
 #endif
+        uiHelper.setGx(telemetry.gForceX);
+        uiHelper.setGy(telemetry.gForceY);
 
         // 2. Push to SD Log Queue — only when a session is active to avoid stale data
         if (LogManager::logQueue != NULL && logManager.isSessionActive()) {
-            xQueueSend(LogManager::logQueue, &EspNowManager::lastTelemetry, 0);
+            xQueueSend(LogManager::logQueue, &telemetry, 0);
         }
 
-        // lastProcessedTimestamp = EspNowManager::lastTelemetry.timestamp;
-        lastMessageCount++;
-
-        uiHelper.setSpeed(EspNowManager::lastTelemetry.speedKmph);
+        uiHelper.setSpeed(telemetry.speedKmph);
 
         // 8. Update GPS Satellite Indicator
-        uint8_t sats = EspNowManager::lastTelemetry.sats;
+        uint8_t sats = telemetry.sats;
         static uint8_t lastSats = 255; // Use 255 so it guarantees an update on the very first loop
         if (sats != lastSats) {
             lastSats = sats;
@@ -256,19 +182,8 @@ void syncUI() {
             uiHelper.setGps(lastSats);
         }
 
-        // 9. Update Helmet Battery Level
-#ifdef HAS_HELMET
-        static uint8_t lastBatteryLevel = 255;
-        helmetBatteryCurrentLevel = EspNowManager::lastTelemetry.helmetBattery;
-        if (helmetBatteryCurrentLevel >= 100) helmetBatteryCurrentLevel = 100;
-        if (helmetBatteryCurrentLevel != lastBatteryLevel) {
-            lastBatteryLevel = helmetBatteryCurrentLevel;
-            uiHelper.setHelmet(lastBatteryLevel);
-        }
-#endif
-
-        // 10. Lap Detection — only while a session is active
-        if (logManager.isSessionActive() && lapManager.processTelemetry(EspNowManager::lastTelemetry)) {
+        // 9. Lap Detection — only while a session is active
+        if (logManager.isSessionActive() && lapManager.processTelemetry(telemetry)) {
             s_lapCount++;
             uint64_t lt = lapManager.getLastLapTime();
             uint64_t bt = lapManager.getBestLapTime();
@@ -299,19 +214,9 @@ void syncUI() {
                 uiHelper.setDelta(fabsf((float)deltaMs / 1000.0f), deltaMs <= 0);
             }
 
-            s_pendingLapMsg.type           = MSG_LAP_COMPLETED;
-            s_pendingLapMsg.lapTimeMs      = lt;
-            s_pendingLapMsg.previousLapTimeMs = pt;
-            s_pendingLapMsg.bestLapTimeMs  = bt;
-            s_pendingLapMsg.isBest         = isBest;
-            s_lapCompletedPending = true;
-
-            log_i("Lap %d completed: %s (best: %s)", s_lapCount, lapStr, bestStr);
+            log_i("Lap %d completed: %s%s (best: %s)", s_lapCount, lapStr, isBest ? " [BEST]" : "", bestStr);
         }
     }
-
-    // --- SIGNAL HEALTH INDICATOR (helmet link only) ---
-    uiHelper.setPps(expectedPps, pps);
 
     // Drive the recording panel blink
     uiHelper.tickRecordingPanel();
@@ -358,17 +263,12 @@ void setup() {
     uiHelper.init();
 
     // 3. Initialize Managers
-#ifdef HAS_HELMET
-    EspNowManager::begin();
-#endif
     logManager.begin();
     displayBattery.begin();
 
-#ifndef HAS_HELMET
     if (!gps.begin()) {
-        log_e("Standalone GPS failed to start on RX=%d TX=%d!", GPS_STANDALONE_RX, GPS_STANDALONE_TX);
+        log_e("GPS failed to start on RX=%d TX=%d!", GPS_STANDALONE_RX, GPS_STANDALONE_TX);
     }
-#endif
 
     // 4. Load config from SD and apply saved theme
     configManager.begin();
@@ -405,10 +305,6 @@ void setup() {
         }
     }
 
-#ifndef HAS_HELMET
-    uiHelper.hideHelmet();
-#endif
-
     bsp_display_unlock();
 
 #if defined(ENABLE_IMU)
@@ -429,35 +325,18 @@ void loop() {
 
     esp_task_wdt_reset();   // feed the display-wedge watchdog (always on)
 
-#ifdef HAS_HELMET
-    processIncomingErrorLog();
-#endif
-
 #if defined(ENABLE_IMU)
     if (imuReady) {
         float currentSteering = calibManager.getSteeringAngle();
 
-        if (calibManager.isDone() && (now - lastImuReadMs >= timeBetweenImuUplinkMessages)) {
+        if (calibManager.isDone() && (now - lastImuReadMs >= timeBetweenImuReads)) {
             latestImuData = imu.update(currentSteering);
             lastImuReadMs = now;
-
-#ifdef HAS_HELMET
-            // Push IMU sample to helmet so it can use it for GPS speed filtering.
-            ImuFeedbackMsg imuMsg = {};
-            imuMsg.type = MSG_IMU_FEEDBACK;
-            imuMsg.gForceX = latestImuData.accelX;
-            imuMsg.gForceY = latestImuData.accelY;
-            imuMsg.totalGForce = latestImuData.gForce;
-            imuMsg.gyroZ = latestImuData.gyroZ;
-            imuMsg.sampleMs = now;
-            EspNowManager::sendImuFeedback(imuMsg);
-#endif
         }
     }
 #endif
 
-#ifndef HAS_HELMET
-    // Poll local GPS and inject it as telemetry (reuses the helmet-mode processing path).
+    // Poll the local GPS and assemble the telemetry frame consumed by syncUI().
     if (gps.update()) {
         float imuG = 0.0f, imuGyroZ = 0.0f, imuGx = 0.0f, imuGy = 0.0f;
 #if defined(ENABLE_IMU)
@@ -468,20 +347,19 @@ void loop() {
             imuGy    = latestImuData.accelY;
         }
 #endif
-        EspNowManager::lastTelemetry.type        = MSG_TELEMETRY;
-        EspNowManager::lastTelemetry.speedKmph   = (float)gps.getSpeed(imuG, imuGyroZ);
-        EspNowManager::lastTelemetry.gForceX     = imuGx;
-        EspNowManager::lastTelemetry.gForceY     = imuGy;
-        EspNowManager::lastTelemetry.totalGForce = imuG;
-        EspNowManager::lastTelemetry.gyroZ       = imuGyroZ;
-        EspNowManager::lastTelemetry.lat         = gps.getLat();
-        EspNowManager::lastTelemetry.lng         = gps.getLng();
-        EspNowManager::lastTelemetry.sats        = (uint8_t)gps.getSatellites();
-        EspNowManager::lastTelemetry.hasFix      = gps.hasFix() ? 1 : 0;
-        EspNowManager::lastTelemetry.timestamp   = gps.getEpochMs();
-        EspNowManager::newDataAvailable          = true;
+        telemetry.type        = MSG_TELEMETRY;
+        telemetry.speedKmph   = (float)gps.getSpeed(imuG, imuGyroZ);
+        telemetry.gForceX     = imuGx;
+        telemetry.gForceY     = imuGy;
+        telemetry.totalGForce = imuG;
+        telemetry.gyroZ       = imuGyroZ;
+        telemetry.lat         = gps.getLat();
+        telemetry.lng         = gps.getLng();
+        telemetry.sats        = (uint8_t)gps.getSatellites();
+        telemetry.hasFix      = gps.hasFix() ? 1 : 0;
+        telemetry.timestamp   = gps.getEpochMs();
+        newTelemetryAvailable = true;
     }
-#endif
 
     // Display battery ADC read — done before the display lock to avoid blocking LVGL
     static uint8_t cachedDisplayBattPct = 255;
@@ -492,12 +370,9 @@ void loop() {
         log_i("Display battery: %d%%", cachedDisplayBattPct);
     }
 
-    // PPS Counter Logic
-    if (now - lastPPSUpdate >= 1000) {
-        uint32_t lastPps = lastMessageCount;
-        lastMessageCount = 0;
-        if (pps != lastPps) pps = lastPps;
-        lastPPSUpdate = now;
+    // Once-a-second health reporting
+    if (now - lastHealthReportMs >= 1000) {
+        lastHealthReportMs = now;
 
         // QSPI flush health: report dropped frames and the worst bus-idle wait in
         // the last second, then reset the stall high-water mark. A blink should line
@@ -517,12 +392,8 @@ void loop() {
         if (imuReady) {
             float steeringDeg = calibManager.getSteeringAngle();
             latestImuData = imu.update(steeringDeg);
-            log_i("Incoming Rate: %d pkts/sec | Steering: %.1f deg | G: %.2f\n", pps, steeringDeg, latestImuData.gForce);
-        } else {
-            log_i("Incoming Rate: %d pkts/sec\n", pps);
+            log_i("Steering: %.1f deg | G: %.2f", steeringDeg, latestImuData.gForce);
         }
-#else
-        log_i("Incoming Rate: %d pkts/sec\n", pps);
 #endif
     }
 
@@ -543,16 +414,6 @@ void loop() {
     syncUI();
 
     bsp_display_unlock();
-
-#ifdef HAS_HELMET
-    // Send lap completed notification to helmet outside the display lock
-    if (s_lapCompletedPending) {
-        s_lapCompletedPending = false;
-        EspNowManager::sendLapCompleted(s_pendingLapMsg);
-    }
-#else
-    s_lapCompletedPending = false; // no helmet to notify; discard
-#endif
 
     delay(1);
 }

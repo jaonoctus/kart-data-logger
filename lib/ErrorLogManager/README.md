@@ -1,5 +1,11 @@
 # Error Logging System
 
+> **Dormant.** This library is not part of any current build. It was written for
+> the helmet logger node, which has been removed from the project; `src/main_logger.cpp`
+> and the ESP-NOW transfer path referenced below no longer exist. It is kept here
+> in case a second node is reintroduced. The `LOG_ERROR` macros it documents now
+> live in `lib/Shared/LoggingUtils.h` and compile down to serial-only logging.
+
 ## Overview
 
 The Error Logging System provides a reliable way to capture, store, and transmit error messages from the helmet logger to the display unit. Errors are logged to LittleFS in a file called `/helmet_error.log`. On startup, if a log file exists, it's automatically transmitted to the display via ESP-NOW, which can then record it to SD card for later analysis.
@@ -228,5 +234,5 @@ if (!audio.begin(LittleFS, volume)) {
 
 - `lib/Shared/EspNowProtocol.h` - Message definitions
 - `lib/ErrorLogManager/ErrorLogManager.h/.cpp` - Core implementation
-- `lib/ErrorLogManager/LoggingUtils.h` - Helper macros
+- `lib/Shared/LoggingUtils.h` - Helper macros
 - `src/main_logger.cpp` - Initialization and startup integration

@@ -13,11 +13,14 @@
 #ifndef LOGGING_UTILS_H
 #define LOGGING_UTILS_H
 
+// No target currently defines IS_LOGGER — the display build takes the serial-only
+// branch below. The branch is kept so a future node with persistent error capture
+// can opt back in by defining IS_LOGGER and instantiating `errorLogger`.
 #ifdef IS_LOGGER
 
 #include "ErrorLogManager.h"
 
-// Defined in main_logger.cpp
+// Must be defined by the firmware's main translation unit.
 extern ErrorLogManager errorLogger;
 
 #define LOG_ERROR(msg) \

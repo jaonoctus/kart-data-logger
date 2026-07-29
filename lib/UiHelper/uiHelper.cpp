@@ -117,22 +117,6 @@ void UiHelper::setDelta(float seconds, bool faster) {
     lv_label_set_text_fmt(ui_labeldeltavar, "%.2f", fabsf(seconds));
 }
 
-void UiHelper::setHelmet(uint8_t pct) {
-    if (!ui_labelvarhelmet) return;
-
-    if (pct == 255)
-        lv_label_set_text(ui_labelvarhelmet, "--");
-    else {
-        uint32_t hc = batt_color(pct);
-        lv_label_set_text_fmt(ui_labelvarhelmet, "%d%%", pct);
-        lv_obj_set_style_text_color(ui_labelvarhelmet, C(hc), 0);
-    }
-}
-
-void UiHelper::hideHelmet() {
-    lv_obj_add_flag(ui_panelhelmet, LV_OBJ_FLAG_HIDDEN);
-}
-
 void UiHelper::setDisplay(uint8_t pct) {
     if (!ui_labelvardisplay) return;
 
@@ -155,14 +139,6 @@ void UiHelper::setGps(uint8_t pct) {
         lv_label_set_text_fmt(ui_labelvargps, "%d", pct);
         lv_obj_set_style_text_color(ui_labelvargps, C(hc), 0);
     }
-}
-
-void UiHelper::setPps(uint8_t expected_pps, uint8_t pps) {
-    if (!ui_labelvaresp) return;
-
-    uint32_t hc = esp_color(expected_pps, pps);
-    lv_label_set_text_fmt(ui_labelvaresp, "%d", pps);
-    lv_obj_set_style_text_color(ui_labelvaresp, C(hc), 0);
 }
 
 /* ============================================================================
@@ -361,11 +337,6 @@ uint32_t UiHelper::batt_color(uint8_t pct) {
 uint32_t UiHelper::gps_color(uint8_t n) {
     if (n >= 8) return T.good;
     if (n >= 4 || (millis() / 500) % 2) return DASH_WARN_HEX;
-    return T.bad;
-}
-uint32_t UiHelper::esp_color(uint8_t expected_pps, uint8_t pps) {
-    if (pps >= expected_pps) return T.good;
-    if (pps >= expected_pps / 2  || (millis() / 500) % 2) return DASH_WARN_HEX;
     return T.bad;
 }
 
