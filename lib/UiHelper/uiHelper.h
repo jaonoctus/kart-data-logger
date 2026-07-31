@@ -49,11 +49,8 @@ public:
                 const char *lap_str,                   /* e.g. "1:23.74" */
                 const char *best_str);                 /* e.g. "1:23.32" */
     void setDelta(float seconds, bool faster);         /* faster = green pill */
-    void hideHelmet();                                 /* hide helmet from statusbar */
-    void setHelmet(uint8_t pct);                       /* battery level */ 
     void setDisplay(uint8_t pct);                      /* battery level */
     void setGps(uint8_t pct);                          /* number of satellites */
-    void setPps(uint8_t expected_pps, uint8_t pct);    /* number of packets per second */
     void setTheme(dash_mode_t mode);                   /* day / night swap */
     void setSessionState(bool active);                 /* updates button label + recording panel */
     void tickRecordingPanel();                         /* call every frame to drive the blink */
@@ -67,7 +64,6 @@ public:
 private:
     static uint32_t batt_color(uint8_t pct);
     static uint32_t gps_color(uint8_t n);
-    static uint32_t esp_color(uint8_t expected_pps, uint8_t pps);
     static void refresh_track_name(void);
     static void refresh_coord_row(setup_line_side_t side);
     static void refresh_dirty(void);

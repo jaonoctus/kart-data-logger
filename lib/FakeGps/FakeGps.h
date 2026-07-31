@@ -49,7 +49,6 @@ public:
             msg.lat = lat;
             msg.lng = lng;
             msg.hasFix = (sats >= 3);
-            msg.helmetBattery = 100;
 
             return true;
         }

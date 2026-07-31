@@ -5,7 +5,7 @@
 
 #include "../ui.h"
 
-lv_obj_t *ui_statusbarscreen = NULL;lv_obj_t *ui_panelstatus = NULL;lv_obj_t *ui_panelhelmet = NULL;lv_obj_t *ui_labeliconhelmet = NULL;lv_obj_t *ui_labeltaghelmet = NULL;lv_obj_t *ui_labelvarhelmet = NULL;lv_obj_t *ui_paneldisplay = NULL;lv_obj_t *ui_labelicondisplay = NULL;lv_obj_t *ui_labeltagdisplay = NULL;lv_obj_t *ui_labelvardisplay = NULL;lv_obj_t *ui_panelgps = NULL;lv_obj_t *ui_labelicongps = NULL;lv_obj_t *ui_labeltaggps = NULL;lv_obj_t *ui_labelvargps = NULL;lv_obj_t *ui_panelesp = NULL;lv_obj_t *ui_labeliconesp = NULL;lv_obj_t *ui_labeltagesp = NULL;lv_obj_t *ui_labelvaresp = NULL;
+lv_obj_t *ui_statusbarscreen = NULL;lv_obj_t *ui_panelstatus = NULL;lv_obj_t *ui_paneldisplay = NULL;lv_obj_t *ui_labelicondisplay = NULL;lv_obj_t *ui_labeltagdisplay = NULL;lv_obj_t *ui_labelvardisplay = NULL;lv_obj_t *ui_panelgps = NULL;lv_obj_t *ui_labelicongps = NULL;lv_obj_t *ui_labeltaggps = NULL;lv_obj_t *ui_labelvargps = NULL;
 // event funtions
 void ui_event_panelstatus( lv_event_t * e) {
     lv_event_code_t event_code = lv_event_get_code(e);
@@ -42,49 +42,6 @@ lv_obj_set_style_pad_left(ui_panelstatus, 0, LV_PART_MAIN| LV_STATE_DEFAULT);
 lv_obj_set_style_pad_right(ui_panelstatus, 0, LV_PART_MAIN| LV_STATE_DEFAULT);
 lv_obj_set_style_pad_top(ui_panelstatus, 0, LV_PART_MAIN| LV_STATE_DEFAULT);
 lv_obj_set_style_pad_bottom(ui_panelstatus, 0, LV_PART_MAIN| LV_STATE_DEFAULT);
-
-ui_panelhelmet = lv_obj_create(ui_panelstatus);
-lv_obj_set_width( ui_panelhelmet, LV_SIZE_CONTENT);  /// 1
-lv_obj_set_height( ui_panelhelmet, LV_SIZE_CONTENT);   /// 1
-lv_obj_set_align( ui_panelhelmet, LV_ALIGN_CENTER );
-lv_obj_set_flex_flow(ui_panelhelmet,LV_FLEX_FLOW_ROW);
-lv_obj_set_flex_align(ui_panelhelmet, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-lv_obj_remove_flag( ui_panelhelmet, LV_OBJ_FLAG_SCROLLABLE );    /// Flags
-lv_obj_set_style_radius(ui_panelhelmet, 0, LV_PART_MAIN| LV_STATE_DEFAULT);
-lv_obj_set_style_bg_color(ui_panelhelmet, lv_color_hex(0x050608), LV_PART_MAIN | LV_STATE_DEFAULT );
-lv_obj_set_style_bg_opa(ui_panelhelmet, 255, LV_PART_MAIN| LV_STATE_DEFAULT);
-lv_obj_set_style_border_width(ui_panelhelmet, 0, LV_PART_MAIN| LV_STATE_DEFAULT);
-lv_obj_set_style_pad_row(ui_panelhelmet, 0, LV_PART_MAIN| LV_STATE_DEFAULT);
-lv_obj_set_style_pad_column(ui_panelhelmet, 5, LV_PART_MAIN| LV_STATE_DEFAULT);
-
-ui_labeliconhelmet = lv_label_create(ui_panelhelmet);
-lv_obj_set_width( ui_labeliconhelmet, LV_SIZE_CONTENT);  /// 1
-lv_obj_set_height( ui_labeliconhelmet, LV_SIZE_CONTENT);   /// 1
-lv_obj_set_align( ui_labeliconhelmet, LV_ALIGN_CENTER );
-lv_label_set_text(ui_labeliconhelmet,"");
-lv_obj_set_style_text_color(ui_labeliconhelmet, lv_color_hex(0x6B7280), LV_PART_MAIN | LV_STATE_DEFAULT );
-lv_obj_set_style_text_opa(ui_labeliconhelmet, 255, LV_PART_MAIN| LV_STATE_DEFAULT);
-lv_obj_set_style_text_font(ui_labeliconhelmet, &lv_font_montserrat_14, LV_PART_MAIN| LV_STATE_DEFAULT);
-
-ui_labeltaghelmet = lv_label_create(ui_panelhelmet);
-lv_obj_set_width( ui_labeltaghelmet, LV_SIZE_CONTENT);  /// 1
-lv_obj_set_height( ui_labeltaghelmet, LV_SIZE_CONTENT);   /// 1
-lv_obj_set_align( ui_labeltaghelmet, LV_ALIGN_CENTER );
-lv_label_set_text(ui_labeltaghelmet,"HLMT");
-lv_obj_set_style_text_color(ui_labeltaghelmet, lv_color_hex(0x6B7280), LV_PART_MAIN | LV_STATE_DEFAULT );
-lv_obj_set_style_text_opa(ui_labeltaghelmet, 255, LV_PART_MAIN| LV_STATE_DEFAULT);
-lv_obj_set_style_text_letter_space(ui_labeltaghelmet, 1, LV_PART_MAIN| LV_STATE_DEFAULT);
-lv_obj_set_style_text_line_space(ui_labeltaghelmet, 0, LV_PART_MAIN| LV_STATE_DEFAULT);
-lv_obj_set_style_text_font(ui_labeltaghelmet, &lv_font_montserrat_14, LV_PART_MAIN| LV_STATE_DEFAULT);
-
-ui_labelvarhelmet = lv_label_create(ui_panelhelmet);
-lv_obj_set_width( ui_labelvarhelmet, LV_SIZE_CONTENT);  /// 1
-lv_obj_set_height( ui_labelvarhelmet, LV_SIZE_CONTENT);   /// 1
-lv_obj_set_align( ui_labelvarhelmet, LV_ALIGN_CENTER );
-lv_label_set_text(ui_labelvarhelmet,"--");
-lv_obj_set_style_text_color(ui_labelvarhelmet, lv_color_hex(0xF6F8FB), LV_PART_MAIN | LV_STATE_DEFAULT );
-lv_obj_set_style_text_opa(ui_labelvarhelmet, 255, LV_PART_MAIN| LV_STATE_DEFAULT);
-lv_obj_set_style_text_font(ui_labelvarhelmet, &lv_font_montserrat_14, LV_PART_MAIN| LV_STATE_DEFAULT);
 
 ui_paneldisplay = lv_obj_create(ui_panelstatus);
 lv_obj_set_width( ui_paneldisplay, LV_SIZE_CONTENT);  /// 1
@@ -172,49 +129,6 @@ lv_obj_set_style_text_color(ui_labelvargps, lv_color_hex(0xF6F8FB), LV_PART_MAIN
 lv_obj_set_style_text_opa(ui_labelvargps, 255, LV_PART_MAIN| LV_STATE_DEFAULT);
 lv_obj_set_style_text_font(ui_labelvargps, &lv_font_montserrat_14, LV_PART_MAIN| LV_STATE_DEFAULT);
 
-ui_panelesp = lv_obj_create(ui_panelstatus);
-lv_obj_set_width( ui_panelesp, LV_SIZE_CONTENT);  /// 1
-lv_obj_set_height( ui_panelesp, LV_SIZE_CONTENT);   /// 1
-lv_obj_set_align( ui_panelesp, LV_ALIGN_CENTER );
-lv_obj_set_flex_flow(ui_panelesp,LV_FLEX_FLOW_ROW);
-lv_obj_set_flex_align(ui_panelesp, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-lv_obj_remove_flag( ui_panelesp, LV_OBJ_FLAG_SCROLLABLE );    /// Flags
-lv_obj_set_style_radius(ui_panelesp, 0, LV_PART_MAIN| LV_STATE_DEFAULT);
-lv_obj_set_style_bg_color(ui_panelesp, lv_color_hex(0x050608), LV_PART_MAIN | LV_STATE_DEFAULT );
-lv_obj_set_style_bg_opa(ui_panelesp, 255, LV_PART_MAIN| LV_STATE_DEFAULT);
-lv_obj_set_style_border_width(ui_panelesp, 0, LV_PART_MAIN| LV_STATE_DEFAULT);
-lv_obj_set_style_pad_row(ui_panelesp, 0, LV_PART_MAIN| LV_STATE_DEFAULT);
-lv_obj_set_style_pad_column(ui_panelesp, 5, LV_PART_MAIN| LV_STATE_DEFAULT);
-
-ui_labeliconesp = lv_label_create(ui_panelesp);
-lv_obj_set_width( ui_labeliconesp, LV_SIZE_CONTENT);  /// 1
-lv_obj_set_height( ui_labeliconesp, LV_SIZE_CONTENT);   /// 1
-lv_obj_set_align( ui_labeliconesp, LV_ALIGN_CENTER );
-lv_label_set_text(ui_labeliconesp,"");
-lv_obj_set_style_text_color(ui_labeliconesp, lv_color_hex(0x6B7280), LV_PART_MAIN | LV_STATE_DEFAULT );
-lv_obj_set_style_text_opa(ui_labeliconesp, 255, LV_PART_MAIN| LV_STATE_DEFAULT);
-lv_obj_set_style_text_font(ui_labeliconesp, &lv_font_montserrat_14, LV_PART_MAIN| LV_STATE_DEFAULT);
-
-ui_labeltagesp = lv_label_create(ui_panelesp);
-lv_obj_set_width( ui_labeltagesp, LV_SIZE_CONTENT);  /// 1
-lv_obj_set_height( ui_labeltagesp, LV_SIZE_CONTENT);   /// 1
-lv_obj_set_align( ui_labeltagesp, LV_ALIGN_CENTER );
-lv_label_set_text(ui_labeltagesp,"ESP");
-lv_obj_set_style_text_color(ui_labeltagesp, lv_color_hex(0x6B7280), LV_PART_MAIN | LV_STATE_DEFAULT );
-lv_obj_set_style_text_opa(ui_labeltagesp, 255, LV_PART_MAIN| LV_STATE_DEFAULT);
-lv_obj_set_style_text_letter_space(ui_labeltagesp, 1, LV_PART_MAIN| LV_STATE_DEFAULT);
-lv_obj_set_style_text_line_space(ui_labeltagesp, 0, LV_PART_MAIN| LV_STATE_DEFAULT);
-lv_obj_set_style_text_font(ui_labeltagesp, &lv_font_montserrat_14, LV_PART_MAIN| LV_STATE_DEFAULT);
-
-ui_labelvaresp = lv_label_create(ui_panelesp);
-lv_obj_set_width( ui_labelvaresp, LV_SIZE_CONTENT);  /// 1
-lv_obj_set_height( ui_labelvaresp, LV_SIZE_CONTENT);   /// 1
-lv_obj_set_align( ui_labelvaresp, LV_ALIGN_CENTER );
-lv_label_set_text(ui_labelvaresp,"--");
-lv_obj_set_style_text_color(ui_labelvaresp, lv_color_hex(0xF6F8FB), LV_PART_MAIN | LV_STATE_DEFAULT );
-lv_obj_set_style_text_opa(ui_labelvaresp, 255, LV_PART_MAIN| LV_STATE_DEFAULT);
-lv_obj_set_style_text_font(ui_labelvaresp, &lv_font_montserrat_14, LV_PART_MAIN| LV_STATE_DEFAULT);
-
 lv_obj_add_event_cb(ui_panelstatus, ui_event_panelstatus, LV_EVENT_ALL, NULL);
 
 }
@@ -226,10 +140,6 @@ void ui_statusbarscreen_screen_destroy(void)
 // NULL screen variables
 ui_statusbarscreen= NULL;
 ui_panelstatus= NULL;
-ui_panelhelmet= NULL;
-ui_labeliconhelmet= NULL;
-ui_labeltaghelmet= NULL;
-ui_labelvarhelmet= NULL;
 ui_paneldisplay= NULL;
 ui_labelicondisplay= NULL;
 ui_labeltagdisplay= NULL;
@@ -238,9 +148,5 @@ ui_panelgps= NULL;
 ui_labelicongps= NULL;
 ui_labeltaggps= NULL;
 ui_labelvargps= NULL;
-ui_panelesp= NULL;
-ui_labeliconesp= NULL;
-ui_labeltagesp= NULL;
-ui_labelvaresp= NULL;
 
 }
