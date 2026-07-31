@@ -1,4 +1,13 @@
 #include <Arduino.h>
+#include "esp_task_wdt.h"   // display-wedge safety net (used throughout)
+#include "esp_system.h"     // esp_reset_reason
+
+// QSPI flush telemetry from lib/DisplayBSP/lv_port.c (C linkage). Reported once a
+// second below via log_w so it surfaces at CORE_DEBUG_LEVEL=WARN.
+extern "C" {
+    extern volatile uint32_t lvgl_port_frame_drops;
+    extern volatile uint32_t lvgl_port_max_stall_us;
+}
 
 // Library includes from our new /lib folder
 #include "EspNowManager.h"
@@ -94,6 +103,7 @@ static void processIncomingErrorLog() {
 
     ErrorLogLineMsg lineMsg = {};
     while (EspNowManager::popErrorLogLine(lineMsg)) {
+        esp_task_wdt_reset(); // SD writes here run on loopTask; keep the WDT fed
         if (!errorLogReceiving || errorLogWriteFailed) {
             continue;
         }
@@ -120,6 +130,51 @@ static void processIncomingErrorLog() {
     }
 }
 #endif // HAS_HELMET
+
+// ============================================================================
+// DISPLAY-WEDGE SAFETY NET (ALWAYS ON) - "indestructible" recovery.
+// The AXS15231B QSPI panel write (panel_axs15231b_draw_bitmap) can occasionally
+// hang the LVGL task while it holds the display lock, which would otherwise
+// freeze the whole UI forever (screen + touch + serial dead). The spin cannot
+// be safely unstuck in place, so we guarantee recovery instead: a short Task
+// Watchdog on loopTask converts a wedge into a fast auto-reset (~5s) and the
+// dash comes straight back.
+// Timeout keeps headroom over legitimate slow paths (SD writes) so it only ever
+// fires on a genuine *infinite* wedge, never on a transient stall.
+// ============================================================================
+#define DISPLAY_WDT_TIMEOUT_MS 5000
+
+// Recovery counter persisted across the panic-reset (RTC memory survives a SW
+// reset; it is garbage on a true power-on, so guard it with a magic value).
+RTC_NOINIT_ATTR static uint32_t s_recoveryMagic;
+RTC_NOINIT_ATTR static uint32_t s_recoveryCount;
+
+static void displayWdtInit() {
+    esp_task_wdt_config_t twdt = {};
+    twdt.timeout_ms     = DISPLAY_WDT_TIMEOUT_MS;
+    twdt.idle_core_mask = 0;
+    twdt.trigger_panic  = true;   // a genuine loopTask wedge -> fast auto-reset
+    if (esp_task_wdt_reconfigure(&twdt) != ESP_OK) {
+        esp_task_wdt_init(&twdt);   // not yet initialized by the Arduino core
+    }
+    esp_task_wdt_add(NULL);          // subscribe loopTask; fed each loop()
+}
+
+static void reportRecoveryOnBoot() {
+    esp_reset_reason_t rr = esp_reset_reason();
+    if (s_recoveryMagic != 0xC0FFEE42u) {   // fresh power-on: RTC RAM is garbage
+        s_recoveryMagic = 0xC0FFEE42u;
+        s_recoveryCount = 0;
+    }
+    if (rr == ESP_RST_TASK_WDT || rr == ESP_RST_INT_WDT ||
+        rr == ESP_RST_WDT      || rr == ESP_RST_PANIC) {
+        s_recoveryCount++;
+        log_w("=== AUTO-RECOVERED from display wedge (reset_reason=%d, recoveries this power cycle=%u) ===",
+              (int)rr, s_recoveryCount);
+    } else {
+        s_recoveryCount = 0; // normal power-on / flash / external reset
+    }
+}
 
 // ============================================================================
 // BRIDGES (called from LVGL event callbacks via ui_theme.cpp)
@@ -270,8 +325,18 @@ void setup() {
     delay(2000);
 #endif
     Serial.setDebugOutput(true);
+#if ARDUINO_USB_CDC_ON_BOOT == 1
+    // Non-blocking USB-CDC TX: with no host draining the port (the normal case in
+    // the kart), the CDC buffer fills and log_*() would otherwise BLOCK the calling
+    // task — freezing the dash until a serial monitor reconnects. Drop instead.
+    Serial.setTxTimeoutMs(0);
+#endif
 
     log_i("--- KART DISPLAY BOOTING ---");
+
+    // Report whether this boot is a normal start or an auto-recovery from a
+    // display wedge (Option 4 safety net).
+    reportRecoveryOnBoot();
 
     // 1. Initialize IMU FIRST
 #if defined(ENABLE_IMU)
@@ -352,11 +417,17 @@ void setup() {
     }
 #endif
 
+    // Display-wedge safety net (always on): a wedge -> ~5s auto-reset, not a freeze.
+    displayWdtInit();
+    log_i("Display watchdog armed: loopTask WDT=%dms (panic+reset on wedge)", DISPLAY_WDT_TIMEOUT_MS);
+
     log_i("Display System Ready.");
 }
 
 void loop() {
     uint32_t now = millis();
+
+    esp_task_wdt_reset();   // feed the display-wedge watchdog (always on)
 
 #ifdef HAS_HELMET
     processIncomingErrorLog();
@@ -427,6 +498,20 @@ void loop() {
         lastMessageCount = 0;
         if (pps != lastPps) pps = lastPps;
         lastPPSUpdate = now;
+
+        // QSPI flush health: report dropped frames and the worst bus-idle wait in
+        // the last second, then reset the stall high-water mark. A blink should line
+        // up with either a frame_drops increment (hard skip) or a high max_stall.
+        static uint32_t lastFrameDrops = 0;
+        uint32_t drops = lvgl_port_frame_drops;
+        uint32_t stallUs = lvgl_port_max_stall_us;
+        lvgl_port_max_stall_us = 0;
+        if (drops != lastFrameDrops || stallUs >= 8000) {
+            log_w("[DISP] frame_drops=%lu (+%lu)  max_bus_stall=%lu us",
+                  (unsigned long)drops, (unsigned long)(drops - lastFrameDrops),
+                  (unsigned long)stallUs);
+            lastFrameDrops = drops;
+        }
 
 #if defined(ENABLE_IMU)
         if (imuReady) {

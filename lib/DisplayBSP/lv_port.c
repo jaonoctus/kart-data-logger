@@ -31,6 +31,15 @@
 
 static const char *TAG = "LVGL";
 
+// Frame-drop / bus-stall telemetry. Surfaced from main_display.cpp via log_w so it
+// is visible at CORE_DEBUG_LEVEL=WARN (the ESP_LOG path here is gated separately).
+// - frame_drops: count of frames skipped because the QSPI bus never went idle (the
+//   500ms guard fired) — a hard hiccup, the visible "blink".
+// - max_stall_us: longest the flush had to wait for the prior color DMA to finish
+//   since the last read; a near-miss (high but < timeout) is a slow-bus blink.
+volatile uint32_t lvgl_port_frame_drops = 0;
+volatile uint32_t lvgl_port_max_stall_us = 0;
+
 /*******************************************************************************
 * Types definitions
 *******************************************************************************/
@@ -216,7 +225,11 @@ lv_display_t *lvgl_port_add_disp(const lvgl_port_display_cfg_t *disp_cfg)
         ESP_GOTO_ON_FALSE(trans_buf2, ESP_ERR_NO_MEM, err, TAG, "Not enough memory for buffer(transport) allocation!");
         disp_ctx->trans_buf_2 = trans_buf2;
 
-        trans_done_sem = xSemaphoreCreateCounting(1, 0);
+        // Seed with one "bus-idle" token so the very first frame's first CASET
+        // can proceed; thereafter the token is replenished only by the
+        // on_color_trans_done ISR, so every CASET waits for the prior color DMA
+        // to actually finish before touching the QSPI bus (see flush callback).
+        trans_done_sem = xSemaphoreCreateCounting(1, 1);
         ESP_GOTO_ON_FALSE(trans_done_sem, ESP_ERR_NO_MEM, err, TAG, "Failed to create transport counting Semaphore");
         disp_ctx->trans_done_sem = trans_done_sem;
     }
@@ -511,13 +524,27 @@ static void lvgl_port_flush_callback(lv_display_t *disp, const lv_area_t *area, 
                 if (disp_ctx->draw_wait_cb) {
                     disp_ctx->draw_wait_cb(disp_ctx->panel_handle->user_data);
                 }
-                xSemaphoreGive(disp_ctx->trans_done_sem);
+                // NOTE: do NOT prime trans_done_sem here. The token is seeded once
+                // at creation and replenished only by the color-DMA-done ISR, so the
+                // take below makes chunk 0 wait for the PREVIOUS frame's last DMA to
+                // complete before issuing CASET — closing the inter-frame bus race
+                // that let the unbounded QSPI polling CASET write deadlock.
             }
 
+            // Gate every chunk's CASET/color write on a confirmed-idle bus. If the
+            // prior DMA never signalled done, this times out and we skip the frame
+            // (screen pauses, system stays alive) rather than spinning the CPU in the
+            // unbounded polling command write and tripping the task watchdog.
+            int64_t wait_start_us = esp_timer_get_time();
             if (xSemaphoreTake(disp_ctx->trans_done_sem, pdMS_TO_TICKS(500)) != pdTRUE) {
-                ESP_LOGE(TAG, "DMA transfer timeout on chunk %d — skipping frame", i);
+                lvgl_port_frame_drops++;
+                ESP_LOGE(TAG, "QSPI bus not idle (chunk %d) — skipping frame", i);
                 lv_display_flush_ready(disp);
                 return;
+            }
+            uint32_t waited_us = (uint32_t)(esp_timer_get_time() - wait_start_us);
+            if (waited_us > lvgl_port_max_stall_us) {
+                lvgl_port_max_stall_us = waited_us;
             }
             esp_lcd_panel_draw_bitmap(disp_ctx->panel_handle, x_draw_start, y_draw_start, x_draw_end + 1, y_draw_end + 1, to);
 
