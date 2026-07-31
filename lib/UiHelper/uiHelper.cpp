@@ -32,7 +32,7 @@ void UiHelper::init() {
             .task_max_sleep_ms = 500,
             .timer_period_ms   = 5,
         },
-        .rotate = LV_DISPLAY_ROTATION_90,
+        .rotate = LV_DISPLAY_ROTATION_270,
     };
     bsp_display_start_with_config(&cfg);
     bsp_display_backlight_on();

@@ -35,10 +35,13 @@
 #define TFT_BL        1          // backlight, active HIGH
 #define QSPI_CLOCK    40000000UL
 
-// Native panel resolution; the UI runs rotated 90° => landscape 480x320.
+// Native panel resolution; the UI runs rotated => landscape 480x320.
 #define TFT_RES_W     320
 #define TFT_RES_H     480
-#define TFT_ROT       1          // Arduino_Canvas rotation index 1 == 90°
+// Arduino_Canvas rotation index: 1 == 90°, 3 == 270°. The enclosure mounts the
+// panel upside down relative to the original build, hence 270 rather than 90.
+// gfx_touch_read_cb maps touch to match — keep the two in step.
+#define TFT_ROT       3
 #define LV_HOR_RES    480        // rotated horizontal resolution (LVGL space)
 #define LV_VER_RES    320        // rotated vertical resolution (LVGL space)
 
@@ -117,9 +120,17 @@ static void gfx_touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
                  (nx <= (TFT_RES_W - 1)) && (ny <= (TFT_RES_H - 1));
 
     if (valid) {
-        // Map native -> rotation-90 LVGL space (480x320).
+        // Map native -> LVGL space (480x320). Must track TFT_ROT above: the 270°
+        // case is the 90° mapping with both axes flipped.
+#if TFT_ROT == 3
+        int32_t lx = (TFT_RES_H - 1) - ny;
+        int32_t ly = nx;
+#elif TFT_ROT == 1
         int32_t lx = ny;
         int32_t ly = (TFT_RES_W - 1) - nx;
+#else
+#error "TFT_ROT must be 1 (90 deg) or 3 (270 deg) - portrait needs new LV_*_RES too"
+#endif
         if (lx < 0) lx = 0; else if (lx > LV_HOR_RES - 1) lx = LV_HOR_RES - 1;
         if (ly < 0) ly = 0; else if (ly > LV_VER_RES - 1) ly = LV_VER_RES - 1;
 
