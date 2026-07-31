@@ -88,12 +88,20 @@ def sample_offsets(f, ts, te):
 
 
 def parse_payload(buf):
-    """Return {'GPS5': [...], 'ACCL': [...], 'GPSU': str, 'GPSF': v} for one payload."""
+    """Return {'GPS5'|'GPS9': [...], 'ACCL': [...], 'GPSU': str, 'GPSF': v} for one payload.
+
+    Older cameras (e.g. HERO8) emit GPS5 (lat,lon,alt,2D,3D) plus a separate
+    ~1Hz GPSU timestamp. Newer ones (HERO11+) emit GPS9 instead: each sample
+    already carries its own (lat,lon,alt,2D,3D,days_since_2000,secs_since_midnight,
+    dop,fix), a '?' (complex) GPMF type whose layout comes from the preceding
+    TYPE key rather than a single type char.
+    """
     res = {}
 
     def walk(b, scal):
         pos = 0
         cur = scal
+        typestr = None
         while pos + 8 <= len(b):
             key = b[pos:pos+4].decode('latin1', 'replace')
             typ = chr(b[pos+4]); s = b[pos+5]
@@ -104,6 +112,21 @@ def parse_payload(buf):
                 walk(data, None); cur = scal; continue
             if key == 'GPSU':
                 res['GPSU'] = data.decode('latin1', 'replace').strip('\0'); continue
+            if key == 'TYPE':
+                typestr = data.decode('latin1', 'replace'); continue
+            if key == 'GPS9':
+                if not typestr: continue
+                try: fmt = ''.join(TYPES[c] for c in typestr)
+                except KeyError: continue
+                if struct.calcsize('>'+fmt) != s: continue
+                sc = cur or (1.0,)*len(fmt)
+                recs = []
+                for i in range(rpt):
+                    try: vals = struct.unpack('>'+fmt, data[i*s:(i+1)*s])
+                    except struct.error: continue
+                    recs.append(tuple(vals[k]/sc[k] for k in range(len(vals))))
+                res.setdefault('GPS9', []).extend(recs)
+                continue
             if typ not in TYPES: continue
             w = struct.calcsize('>'+TYPES[typ])
             if s % w: continue
@@ -190,7 +213,8 @@ def calibrate_axes(payloads):
     """
     A, Y, S = [], [], []
     for p in payloads:
-        A += p.get('ACCL', []); Y += p.get('GYRO', []); S += [r[3] for r in p.get('GPS5', [])]
+        A += p.get('ACCL', []); Y += p.get('GYRO', [])
+        S += [r[3] for r in (p.get('GPS9') or p.get('GPS5', []))]
     if not A or not S:
         return 0, 1, 2, [0.0, 0.0, 0.0], 0.0
 
@@ -237,6 +261,15 @@ def gpsu_to_epoch_ms(s):
     return ms
 
 
+_EPOCH_2000 = datetime.datetime(2000, 1, 1, tzinfo=datetime.timezone.utc)
+
+
+def gps9_epoch_ms(days_since_2000, secs_since_midnight):
+    """GPS9's own per-sample timestamp -> epoch ms (UTC)."""
+    dt = _EPOCH_2000 + datetime.timedelta(days=days_since_2000, seconds=secs_since_midnight)
+    return int(dt.timestamp() * 1000)
+
+
 def main():
     if len(sys.argv) < 3:
         sys.exit(__doc__)
@@ -255,22 +288,35 @@ def main():
     print(f"  accel axes: vertical={vert} lateral={lat_ax} longitudinal={lon_ax} "
           f"(lateral r={r:+.2f} vs v*yaw)")
 
-    stamps, step = payload_epochs(payloads)
+    use_gps9 = any('GPS9' in p for p in payloads)
+    if use_gps9:
+        print("  GPS9 stream (per-sample timestamp/fix/DOP) - no GPSU interpolation needed")
+        stamps = step = None
+    else:
+        stamps, step = payload_epochs(payloads)
 
     rows = []
     for i, p in enumerate(payloads):
-        gps = p.get('GPS5', [])
+        gps = p.get('GPS9', []) if use_gps9 else p.get('GPS5', [])
         if not gps: continue
-        t0 = stamps[i]
-        t1 = stamps[i+1] if i+1 < len(stamps) else t0 + int(step)
-        span = (t1 - t0) / len(gps)
 
         accl = p.get('ACCL', [])
         per_gps = len(accl) / len(gps) if accl else 0
-        sats = 12 if p.get('GPSF', 0) >= 3 else 0
 
-        for j, (lat, lon, alt, sp2d, sp3d) in enumerate(gps):
-            t = int(t0 + j*span)
+        if not use_gps9:
+            t0 = stamps[i]
+            t1 = stamps[i+1] if i+1 < len(stamps) else t0 + int(step)
+            span = (t1 - t0) / len(gps)
+            sats = 12 if p.get('GPSF', 0) >= 3 else 0
+
+        for j, rec in enumerate(gps):
+            if use_gps9:
+                lat, lon, alt, sp2d, sp3d, days, secs, dop, fix = rec
+                t = gps9_epoch_ms(days, secs)
+                sats = 12 if fix >= 3 else 0
+            else:
+                lat, lon, alt, sp2d, sp3d = rec
+                t = int(t0 + j*span)
             if accl:
                 a0, a1 = int(j*per_gps), max(int(j*per_gps)+1, int((j+1)*per_gps))
                 win = accl[a0:a1] or [accl[min(a0, len(accl)-1)]]
@@ -286,14 +332,19 @@ def main():
 
     rows.sort(key=lambda r: r[0])
 
-    # GPMF occasionally emits a corrupt GPS5 sample that still claims a 3D fix -
-    # typically coordinates near (0, 0). Left in, the segment from such a point
-    # back to the track spans thousands of km and can intersect the finish line,
+    # GPMF occasionally emits a corrupt GPS sample that still claims a fix -
+    # typically coordinates near (0, 0), or stale/last-known positions during
+    # GPS acquisition. Left in, the segment from such a point back to the
+    # track spans thousands of km and can intersect the finish line,
     # registering a false lap. Reject any sample implying an impossible ground
-    # speed from the last accepted one.
+    # speed from the last accepted one - but only anchor on sats>0 samples,
+    # since sats==0 rows are already unusable and chaining stale no-fix points
+    # together can make an implausible jump look like a plausible speed.
     MAX_KMH = 300.0
     kept, dropped, prev = [], 0, None
     for r in rows:
+        if r[6] == 0:
+            kept.append(r); continue
         if prev is not None:
             dt = (r[0] - prev[0]) / 1000.0
             if dt > 0:
