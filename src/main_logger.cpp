@@ -43,7 +43,7 @@ BatteryManager battery(BATT_ADC, VDIV_ENABLE_PIN, 2.0f);
 PowerManager powerManager(OFF_BUTTON_PIN, PERIPHERAL_ENABLE_PIN, HOLD_TIME_MS, 1);
 ErrorLogManager errorLogger;
 
-// --- FREERTOS QUEUE & MUTEX ---
+// --- FREERTOS QUEUE ---
 QueueHandle_t telemetryQueue;
 static uint32_t lastBatteryReadMs = 0;
 static uint8_t cachedBatteryPercentage = 0;
@@ -51,6 +51,7 @@ static uint8_t cachedBatteryPercentage = 0;
 #if !defined(USE_FAKE_GPS)
 // Wait for a newer IMU sample than lastUsedCounter. We keep a strict timeout so
 // telemetry cadence remains stable even if a packet is dropped.
+#if defined(ENABLE_IMU)
 static bool waitForFreshImuSample(uint32_t &lastUsedCounter, ImuFeedbackMsg &imuOut, TickType_t maxWaitTicks) {
     TickType_t startTick = xTaskGetTickCount();
 
@@ -74,6 +75,7 @@ static bool waitForFreshImuSample(uint32_t &lastUsedCounter, ImuFeedbackMsg &imu
     imuOut.type = MSG_IMU_FEEDBACK;
     return false;
 }
+#endif // ENABLE_IMU
 
 static void monitorGpsDataFlow(bool gotFreshGpsSentence) {
     static uint32_t lastGoodGpsSentenceMs = 0;
@@ -125,7 +127,7 @@ void telemetryTask(void *pvParameters) {
     const TickType_t xFrequency = pdMS_TO_TICKS(gps.getUpdateIntervalMs());
     #endif
 
-#if !defined(USE_FAKE_GPS)
+#if !defined(USE_FAKE_GPS) && defined(ENABLE_IMU)
     uint32_t lastImuCounterUsed = 0;
     const TickType_t imuWaitBudget = (xFrequency > pdMS_TO_TICKS(10))
         ? (xFrequency - pdMS_TO_TICKS(10))
@@ -146,6 +148,7 @@ void telemetryTask(void *pvParameters) {
         bool gotFreshGpsSentence = gps.update();
         monitorGpsDataFlow(gotFreshGpsSentence);
         ImuFeedbackMsg imuFeedback = {};
+#if defined(ENABLE_IMU)
         bool usedFreshImu = waitForFreshImuSample(lastImuCounterUsed, imuFeedback, imuWaitBudget);
 
         static uint32_t lastImuStaleWarnMs = 0;
@@ -153,6 +156,10 @@ void telemetryTask(void *pvParameters) {
             log_w("IMU uplink stale; reusing latest sample for this frame.");
             lastImuStaleWarnMs = millis();
         }
+#else
+        // No IMU: GPS runs standalone; telemetry carries zeroed IMU fields.
+        bool usedFreshImu = false;
+#endif
 
         // 2. Push telemetry on the configured GPS cadence.
         TelemetryMsg msg;
@@ -221,7 +228,7 @@ void setup() {
         while(1); // Halt if filesystem is dead
     }
     log_i("LittleFS Mounted. Waking up Audio...");
-    
+
     // Initialize Error Logger
     if (!errorLogger.begin()) {
         LOG_ERROR("ErrorLogManager failed to initialize!");
@@ -231,7 +238,7 @@ void setup() {
     powerManager.begin();
         
     // Start the audio engine on Core 0
-    audio.begin(LittleFS, 10); 
+    audio.begin(LittleFS, 5); 
     
     #if defined(HAS_STARTUP_AUDIO_CUES)
     audio.tryQueueAudio("/startup.wav");    

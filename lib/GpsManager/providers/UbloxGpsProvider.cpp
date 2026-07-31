@@ -291,7 +291,13 @@ double UbloxGpsProvider::getSpeed(float gForce, float gyroZ) {
     }
 
     bool gpsMoving = (_moveCounter >= _moveCountThreshold);
+#if defined(ENABLE_IMU)
     bool imuActive = gForce > _imuDynGStop || fabsf(gyroZ) > _imuGyroZStop;
+#else
+    (void)gForce;
+    (void)gyroZ;
+    bool imuActive = false;
+#endif
     bool consideredMoving = gpsMoving || imuActive;
 
     if (!consideredMoving) {
