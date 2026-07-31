@@ -5744,10 +5744,10 @@
 			)
 		)
 		(pin "2"
-			(uuid "f7bcc498-6a0e-4db6-b5cf-389c1f08bf98")
+			(uuid "f7bcc498-6a0e-4db6-b5cf-389c1f08bf99")
 		)
 		(pin "1"
-			(uuid "faa61857-2f26-440f-8658-4f03ac148955")
+			(uuid "faa61857-2f26-440f-8658-4f03ac148956")
 		)
 		(instances
 			(project "kart_smd"
@@ -6833,10 +6833,10 @@
 			)
 		)
 		(pin "2"
-			(uuid "f909ab52-d050-43cc-b7c7-9d7e152af350")
+			(uuid "f909ab52-d050-43cc-b7c7-9d7e152af351")
 		)
 		(pin "1"
-			(uuid "d0734c98-e1e8-4bdf-8852-455f59a8793b")
+			(uuid "d0734c98-e1e8-4bdf-8852-455f59a8793c")
 		)
 		(instances
 			(project "kart_smd"
@@ -7179,10 +7179,10 @@
 			)
 		)
 		(pin "1"
-			(uuid "71f88612-d563-476f-a1a7-df8385f151cd")
+			(uuid "71f88612-d563-476f-a1a7-df8385f151ce")
 		)
 		(pin "2"
-			(uuid "d9adc717-06bf-404a-9bd8-6aa15f921bb0")
+			(uuid "d9adc717-06bf-404a-9bd8-6aa15f921bb1")
 		)
 		(instances
 			(project "kart_smd"
