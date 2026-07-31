@@ -41,13 +41,17 @@ def probe(path):
         import struct
         if m[0] == 1: tscale, dur = struct.unpack('>IQ', m[20:32])
         else:         tscale, dur = struct.unpack('>II', m[12:20])
-        if fmt == b'avc1':
+        if fmt in (b'avc1', b'hvc1', b'hev1'):
             vdur = dur/tscale
         elif fmt == b'gpmd':
             off = G.sample_offsets(f, ts, te)
             f.seek(off[0][0])
             p = G.parse_payload(f.read(off[0][1]))
-            if 'GPSU' in p: start = G.gpsu_to_epoch_ms(p['GPSU'])
+            if 'GPSU' in p:
+                start = G.gpsu_to_epoch_ms(p['GPSU'])
+            elif p.get('GPS9'):
+                days, secs = p['GPS9'][0][5], p['GPS9'][0][6]
+                start = G.gps9_epoch_ms(days, secs)
     f.close()
     if start is None or vdur is None:
         raise SystemExit(f"{path}: missing video or GPMF track")
