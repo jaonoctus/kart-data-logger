@@ -13,3 +13,5 @@ hardware/**/gbr
 .claude/
 .memsearch/
 hardware/**/.history/
+video/
+__pycache__/
