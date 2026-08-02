@@ -7,6 +7,7 @@ void LapManager::setFinishLine(const FinishLine& line) {
     lastLapTimeMs = 0;
     previousLapTimeMs = 0;
     bestLapTimeMs = 0xFFFFFFFFFFFFFFFFULL;
+    previousBestLapTimeMs = 0xFFFFFFFFFFFFFFFFULL;
     log_i("LapManager: New Finish Line Set.");
 }
 
@@ -43,7 +44,7 @@ bool LapManager::processTelemetry(const TelemetryMsg& data) {
             _gate.leftLng, _gate.leftLat, _gate.rightLng, _gate.rightLat, 
             fraction
         );
-        log_d("Approaching Gate: %.1fm away", distanceToGateCenter);
+        if (_verbose) log_d("Approaching Gate: %.1fm away", distanceToGateCenter);
     }
 
     // Save current point for the next loop iteration BEFORE we return
@@ -61,7 +62,13 @@ bool LapManager::processTelemetry(const TelemetryMsg& data) {
             if (currentLapStartTime != 0) {
                 previousLapTimeMs = lastLapTimeMs; // Move current to previous before updating
                 lastLapTimeMs = crossingTimeMs - currentLapStartTime;
-                
+
+                // Snapshot the best *before* folding this lap into it, so the
+                // dashboard delta can be measured against the time you were
+                // actually chasing. Comparing against bestLapTimeMs after the
+                // update would read 0.00 on every new personal best.
+                previousBestLapTimeMs = bestLapTimeMs;
+
                 // Check for Best Lap
                 if (lastLapTimeMs < bestLapTimeMs) {
                     bestLapTimeMs = lastLapTimeMs;
@@ -72,7 +79,7 @@ bool LapManager::processTelemetry(const TelemetryMsg& data) {
             currentLapStartTime = crossingTimeMs; 
             return true;
         } else {
-            log_d("Lap crossed but in cooldown. Time since last lap: %llu ms", data.timestamp - currentLapStartTime);
+            if (_verbose) log_d("Lap crossed but in cooldown. Time since last lap: %llu ms", data.timestamp - currentLapStartTime);
         }
     }
     return false;
@@ -107,18 +114,18 @@ bool LapManager::checkLineCrossing(double Ax, double Ay, double Bx, double By,
     // 2. We crossed the line! But was it INSIDE the left/right gate posts?
     double t_num = s2_x * s3_y - s2_y * s3_x;
     if ((t_num < 0) == denomPositive || (t_num > denom) == denomPositive) {
-        log_d("Gate Missed! You crossed the line, but OUTSIDE the Left/Right posts.");
+        if (_verbose) log_d("Gate Missed! You crossed the line, but OUTSIDE the Left/Right posts.");
         return false;
     }
 
     // 3. We are inside the gate! DIRECTION CHECK
     double dotProduct = s1_x * (Cy - Dy) + s1_y * (Dx - Cx);
     if (dotProduct <= 0) {
-        log_d("Crossed Backwards! Left/Right points are swapped. (IGNORED FOR DESK TEST)");
+        if (_verbose) log_d("Crossed Backwards! Left/Right points are swapped. (IGNORED FOR DESK TEST)");
         return false;
     }
 
     fraction = s_num / denom; // Exact millisecond percentage
-    log_d("VALID CROSSING! Fraction: %.3f", fraction);
+    if (_verbose) log_d("VALID CROSSING! Fraction: %.3f", fraction);
     return true;
 }
