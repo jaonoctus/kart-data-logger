@@ -164,6 +164,12 @@ bool SessionBrowser::analyse(const char *path, Analysis &a) {
     if (haveGate) {
         FinishLine fl = { tc->left_lat, tc->left_lon, tc->right_lat, tc->right_lon };
         lm.setFinishLine(fl);
+        /* Splits too, or hasSectors() stays false and every lap reports "--".
+         * setFinishLine() clears them, so this has to come after. */
+        FinishLine s1 = { tc->s1.left_lat, tc->s1.left_lon, tc->s1.right_lat, tc->s1.right_lon };
+        FinishLine s2 = { tc->s2.left_lat, tc->s2.left_lon, tc->s2.right_lat, tc->s2.right_lon };
+        lm.setSectorGates(tc->s1.usable() ? &s1 : nullptr,
+                          tc->s2.usable() ? &s2 : nullptr);
     }
 
     uint32_t speedStride = 1, speedSeen = 0;
@@ -245,6 +251,20 @@ bool SessionBrowser::analyse(const char *path, Analysis &a) {
                 if (lm.processTelemetry(m)) {
                     uint64_t lt = lm.getLastLapTime();
                     if (lt > 0) {
+                        /* Read the splits here, at the finish line: sectors 0
+                         * and 1 still hold this lap's values and are not
+                         * cleared until the next S1. */
+                        for (int k = 0; k < 3; k++) {
+                            uint64_t sv = lm.isSectorValid(k) ? lm.getSectorTime(k) : 0;
+                            a.lapSec[a.lapCount][k] = sv;
+                            if (sv) {
+                                a.haveSectors = true;
+                                if (!a.bestSec[k] || sv < a.bestSec[k]) {
+                                    a.bestSec[k]    = sv;
+                                    a.bestSecLap[k] = (uint8_t)(a.lapCount + 1);
+                                }
+                            }
+                        }
                         a.lapBestBefore[a.lapCount] = lm.getPreviousBestLapTime();
                         /* Sample epoch, not the interpolated crossing instant
                          * LapManager computes internally — within one sample
@@ -267,9 +287,15 @@ bool SessionBrowser::analyse(const char *path, Analysis &a) {
  * ------------------------------------------------------------------------- */
 
 /* lv_table has no per-cell colour API — styles apply to LV_PART_ITEMS as a
- * whole. The supported way to vary one row is to intercept its draw tasks as
- * they are queued and edit the descriptor. The row is carried in id1. */
-static int32_t s_bestRow = -1;      /* 1-based table row, -1 = none */
+ * whole. The supported way to vary a cell is to intercept its draw tasks as
+ * they are queued and edit the descriptor; row is id1, column id2. */
+#define SB_COL_LAP  0
+#define SB_COL_TIME 1
+#define SB_COL_VS   2
+#define SB_COL_S1   3       /* S2 and S3 follow */
+
+static int32_t s_bestRow       = -1;   /* 1-based row of the best lap  */
+static int32_t s_bestSecRow[3] = { -1, -1, -1 };  /* per-sector bests  */
 
 static void lapTableDrawCb(lv_event_t *e) {
     lv_draw_task_t *task = lv_event_get_draw_task(e);
@@ -277,7 +303,15 @@ static void lapTableDrawCb(lv_event_t *e) {
 
     lv_draw_dsc_base_t *base = (lv_draw_dsc_base_t *)lv_draw_task_get_draw_dsc(task);
     if (!base || base->part != LV_PART_ITEMS) return;
-    if (s_bestRow < 0 || (int32_t)base->id1 != s_bestRow) return;
+
+    int32_t row = (int32_t)base->id1, col = (int32_t)base->id2;
+
+    /* Whole row green for the best lap; only the one cell for a best sector,
+     * so "my quickest S2" reads differently from "my quickest lap". */
+    bool green = (s_bestRow >= 0 && row == s_bestRow);
+    if (!green && col >= SB_COL_S1 && col <= SB_COL_S1 + 2)
+        green = (s_bestSecRow[col - SB_COL_S1] == row);
+    if (!green) return;
 
     lv_draw_label_dsc_t *lbl = (lv_draw_label_dsc_t *)base;
     lbl->color = CC(SB_GOOD);
@@ -333,31 +367,47 @@ void SessionBrowser::renderDetail(const char *name, const Analysis &a) {
     } else {
         lv_obj_t *tb = lv_table_create(lc);
         lv_obj_set_width(tb, LV_PCT(100));
-        lv_table_set_column_count(tb, 3);
+        const int cols = a.haveSectors ? 6 : 3;
+        lv_table_set_column_count(tb, cols);
         lv_table_set_row_count(tb, a.lapCount + 1);
-        lv_table_set_cell_value(tb, 0, 0, "LAP");
-        lv_table_set_cell_value(tb, 0, 1, "TIME");
-        lv_table_set_cell_value(tb, 0, 2, "VS BEST");
+        lv_table_set_cell_value(tb, 0, SB_COL_LAP,  "LAP");
+        lv_table_set_cell_value(tb, 0, SB_COL_TIME, "TIME");
+        lv_table_set_cell_value(tb, 0, SB_COL_VS,   "VS BEST");
+        if (a.haveSectors) {
+            lv_table_set_cell_value(tb, 0, SB_COL_S1,     "S1");
+            lv_table_set_cell_value(tb, 0, SB_COL_S1 + 1, "S2");
+            lv_table_set_cell_value(tb, 0, SB_COL_S1 + 2, "S3");
+        }
         s_bestRow = -1;
+        for (int k = 0; k < 3; k++)
+            s_bestSecRow[k] = a.bestSecLap[k] ? (int32_t)a.bestSecLap[k] : -1;
         for (uint8_t i = 0; i < a.lapCount; i++) {
             snprintf(buf, sizeof(buf), "%u", (unsigned)(i + 1));
-            lv_table_set_cell_value(tb, i + 1, 0, buf);
+            lv_table_set_cell_value(tb, i + 1, SB_COL_LAP, buf);
             fmtLap(a.lapMs[i], l1, sizeof(l1));
             bool best = (a.lapMs[i] == a.bestMs);
             /* First match wins: if two laps tie on the millisecond, only the
              * earlier one is painted rather than both. */
             if (best && s_bestRow < 0) s_bestRow = i + 1;
             snprintf(buf, sizeof(buf), "%s%s", l1, best ? " *" : "");
-            lv_table_set_cell_value(tb, i + 1, 1, buf);
+            lv_table_set_cell_value(tb, i + 1, SB_COL_TIME, buf);
             /* Delta against the best as it stood before this lap — same rule
              * the live dashboard uses. */
             uint64_t pb = a.lapBestBefore[i];
             if (pb == 0 || pb == 0xFFFFFFFFFFFFFFFFULL) {
-                lv_table_set_cell_value(tb, i + 1, 2, "--");
+                lv_table_set_cell_value(tb, i + 1, SB_COL_VS, "--");
             } else {
                 double d = ((double)(int64_t)(a.lapMs[i] - pb)) / 1000.0;
                 snprintf(l2, sizeof(l2), "%+.3f", d);
-                lv_table_set_cell_value(tb, i + 1, 2, l2);
+                lv_table_set_cell_value(tb, i + 1, SB_COL_VS, l2);
+            }
+            if (a.haveSectors) {
+                for (int k = 0; k < 3; k++) {
+                    uint64_t sv = a.lapSec[i][k];
+                    if (sv) fmtLap(sv, l1, sizeof(l1));
+                    else    snprintf(l1, sizeof(l1), "--");   /* gate missed */
+                    lv_table_set_cell_value(tb, i + 1, SB_COL_S1 + k, l1);
+                }
             }
         }
         lv_obj_set_style_bg_color(tb, CC(SB_SURF), LV_PART_ITEMS);

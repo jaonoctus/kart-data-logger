@@ -38,7 +38,8 @@ button:hover,a:hover{border-color:var(--ac)}button:disabled{opacity:.4;cursor:de
 table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
 th{text-align:left;font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.6px;padding:6px 8px;border-bottom:1px solid var(--ru)}
 td{padding:6px 8px;border-bottom:1px solid var(--ru)}tr:last-child td{border-bottom:0}
-.best{color:var(--gd);font-weight:600}.dn{color:var(--gd)}.up{color:var(--bd)}
+.best{color:var(--gd);font-weight:600}
+tr.bestrow td{background:rgba(46,224,122,.07)}.dn{color:var(--gd)}.up{color:var(--bd)}
 canvas{width:100%;max-width:100%;display:block;border-radius:6px;background:var(--sf2)}
 #msg{padding:9px 12px;border-radius:6px;background:var(--sf2);margin-bottom:14px;display:none}
 #msg.err{color:var(--bd)}#drop{border:1px dashed var(--ru);border-radius:6px;padding:12px;text-align:center;color:var(--mut);font-size:12px;margin-top:10px}
@@ -57,7 +58,7 @@ canvas{width:100%;max-width:100%;display:block;border-radius:6px;background:var(
 </div></div></div></div>
 <script>
 const $=s=>document.querySelector(s);
-let gate=null, sel=null, lastRows=null;
+let gate=null, s1=null, s2=null, sel=null, lastRows=null;
 // Canvases are sized from clientWidth, so a window resize (or rotating a
 // phone) has to redraw or the charts stay at the old geometry.
 let rt=null;
@@ -130,29 +131,62 @@ function cross(Ax,Ay,Bx,By,Cx,Cy,Dx,Dy){
   if(s1x*(Cy-Dy)+s1y*(Dx-Cx)<=0)return null;   // crossed backwards
   return sn/den}
 
+// Proximity is measured to the gate SEGMENT, not its centre — same rule as
+// LapManager. A wide gate's half-width alone can exceed a centre radius, and
+// the finish line and S2 can be collinear and abutting, which a centre
+// distance cannot tell apart.
+function nearSeg(la,lo,g){
+  const k=Math.cos(g.ll*Math.PI/180);
+  const bx=(g.rn-g.ln)*111320*k, by=(g.rl-g.ll)*110540;
+  const px=(lo-g.ln)*111320*k,   py=(la-g.ll)*110540;
+  const l2=bx*bx+by*by;
+  let t=l2>0?((px*bx+py*by)/l2):0; t=Math.max(0,Math.min(1,t));
+  return Math.hypot(px-t*bx, py-t*by)}
+
 function laps(rows){
   if(!gate)return{rows:[],why:'no tracks.ini on the card — cannot locate the finish line'};
-  const cLat=(gate.ll+gate.rl)/2, cLng=(gate.ln+gate.rn)/2;
-  let prev=null, start=0, last=0, best=Infinity, out=[];
+  // Gate order matches LapManager: sector n is closed by gate n.
+  const gates=[]; if(s1&&s2){gates.push(s1,s2)} gates.push(gate);
+  const END=gates.length-1;
+
+  let prev=null, start=0, best=Infinity, out=[];
+  let secOpen=null, secIdx=-1, cur=[null,null,null];
+  const bestSec=[Infinity,Infinity,Infinity];
+
   for(const r of rows){
     if(!r.fix){continue}
     if(!prev){prev=r;continue}
-    let f=null;
-    if(dist(r.lat,r.lng,cLat,cLng)<10)
-      f=cross(prev.lng,prev.lat,r.lng,r.lat,gate.ln,gate.ll,gate.rn,gate.rl);
+    let hit=-1, f=null;
+    for(let g=0;g<gates.length;g++){
+      const G=gates[g];
+      if(nearSeg(r.lat,r.lng,G)>=12)continue;
+      const x=cross(prev.lng,prev.lat,r.lng,r.lat,G.ln,G.ll,G.rn,G.rl);
+      if(x!==null){hit=g;f=x;break}
+    }
     const tA=prev.t; prev=r;
-    if(f===null)continue;
-    if(r.t-start<=10000)continue;                       // cooldown
+    if(hit<0)continue;
     const ct=tA+f*(r.t-tA);
+
+    if(hit!==END){
+      // A split: close the sector it terminates, open the next.
+      if(secIdx===hit&&secOpen!==null)cur[hit]=ct-secOpen;
+      secIdx=hit+1; secOpen=ct;
+      continue;
+    }
+    if(r.t-start<=10000)continue;                       // lap cooldown
+    if(secIdx===END&&secOpen!==null)cur[END]=ct-secOpen;
+
     if(start!==0){const lap=ct-start;
       // Delta is against the best lap as it stood *before* this one — the time
       // you were chasing. Matches LapManager::getPreviousBestLapTime().
       const prevBest=best;
       const isBest=lap<best; if(isBest)best=lap;
-      out.push({n:out.length+1,t:lap,best:isBest,prevBest:prevBest,at:ct}); last=lap}
-    start=ct;
+      const sec=cur.slice();
+      sec.forEach((v,i)=>{if(v&&v<bestSec[i])bestSec[i]=v});
+      out.push({n:out.length+1,t:lap,best:isBest,prevBest:prevBest,at:ct,sec})}
+    cur=[null,null,null]; secIdx=0; secOpen=ct; start=ct;
   }
-  return{rows:out,best}}
+  return{rows:out,best,bestSec,hasSec:gates.length===3}}
 
 function load(name){
   msg('loading '+name+'…');
@@ -188,10 +222,17 @@ function render(rows){
 
   if(L.why) $('#laps').innerHTML=`<span class="mut">${L.why}</span>`;
   else if(!L.rows.length) $('#laps').innerHTML='<span class="mut">no finish-line crossings — is this log from the selected track?</span>';
-  else $('#laps').innerHTML='<table><tr><th>Lap</th><th>Time</th><th>vs best</th></tr>'+
+  else $('#laps').innerHTML='<table><tr><th>Lap</th><th>Time</th><th>vs best</th>'+
+    (L.hasSec?'<th>S1</th><th>S2</th><th>S3</th>':'')+'</tr>'+
     L.rows.map(l=>{const dl=isFinite(l.prevBest)?l.t-l.prevBest:null;
-      return `<tr><td>${l.n}</td><td class="${l.best?'best':''}">${fmt(l.t)}${l.best?' ★':''}</td>
-      <td class="${dl===null?'mut':dl<0?'dn':'up'}">${dl===null?'—':(dl<0?'−':'+')+(Math.abs(dl)/1000).toFixed(3)}</td></tr>`}).join('')+'</table>';
+      // Best lap greens the whole row; a best sector greens only that cell, so
+      // "my quickest S2" reads differently from "my quickest lap".
+      const secs=L.hasSec?l.sec.map((v,i)=>
+        `<td class="${v&&v===L.bestSec[i]?'best':(v?'':'mut')}">${v?fmt(v):'—'}</td>`).join(''):'';
+      return `<tr class="${l.best?'bestrow':''}"><td>${l.n}</td>
+      <td class="${l.best?'best':''}">${fmt(l.t)}${l.best?' ★':''}</td>
+      <td class="${dl===null?'mut':dl<0?'dn':'up'}">${dl===null?'—':(dl<0?'−':'+')+(Math.abs(dl)/1000).toFixed(3)}</td>
+      ${secs}</tr>`}).join('')+'</table>';
 
   trace(rows,t0,L.rows);
   map(rows,mx);
@@ -280,8 +321,12 @@ fetch('/api/file?path=/tracks.ini').then(r=>r.ok?r.text():null).then(t=>{
   if(!t)return;
   const sel=+(t.match(/^selected=(\d+)/m)?.[1]??0), g={};
   const get=k=>{const m=t.match(new RegExp('^'+sel+'_'+k+'=(-?[\\d.]+)','m'));return m?+m[1]:null};
-  g.ll=get('left_lat'); g.ln=get('left_lon'); g.rl=get('right_lat'); g.rn=get('right_lon');
-  if([g.ll,g.ln,g.rl,g.rn].every(v=>v!==null))gate=g;
+  const gt=p=>{const o={};
+    o.ll=get(p+'left_lat'); o.ln=get(p+'left_lon');
+    o.rl=get(p+'right_lat'); o.rn=get(p+'right_lon');
+    return [o.ll,o.ln,o.rl,o.rn].every(v=>v!==null)?o:null};
+  gate=gt(''); s1=gt('s1_'); s2=gt('s2_');
+  if(lastRows)render(lastRows);   // tracks.ini may land after the log
 }).catch(()=>{});
 </script></body></html>)HTML";
 

@@ -57,6 +57,13 @@ private:
                                                 * placing marks on the x axis */
         uint64_t bestMs;
 
+        /* Per-lap splits, read off LapManager as each lap closes. Zero when a
+         * split gate was missed that lap — the lap time is still good. */
+        uint64_t lapSec[SB_MAX_LAPS][3];
+        uint64_t bestSec[3];        /* fastest split seen for each sector   */
+        uint8_t  bestSecLap[3];     /* 1-based lap holding it, 0 = none     */
+        bool     haveSectors;
+
         uint16_t speedN;
         uint8_t  speed[SB_SPEED_PTS];          /* km/h, clamped to 255 */
 
