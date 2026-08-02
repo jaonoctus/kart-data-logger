@@ -150,10 +150,52 @@ static void apply_track_coords(int idx) {
     if (!tc) {
         ui_helper_set_start_l(0.0, 0.0, false);
         ui_helper_set_start_r(0.0, 0.0, false);
+        for (int g = 0; g < 2; g++)
+            for (int s = 0; s < 2; s++) ui_helper_set_sector_coord(g, s, 0.0, 0.0, false);
         return;
     }
     ui_helper_set_start_l(tc->left_lat,  tc->left_lon,  tc->left_valid);
     ui_helper_set_start_r(tc->right_lat, tc->right_lon, tc->right_valid);
+
+    const SectorGate *sg[2] = { &tc->s1, &tc->s2 };
+    for (int g = 0; g < 2; g++) {
+        /* side: 0 = left post, 1 = right — this file talks to the UI across a
+         * C bridge and does not see uiHelper's enum. */
+        ui_helper_set_sector_coord(g, 0,
+            sg[g]->left_lat,  sg[g]->left_lon,  sg[g]->left_valid);
+        ui_helper_set_sector_coord(g, 1,
+            sg[g]->right_lat, sg[g]->right_lon, sg[g]->right_valid);
+    }
+}
+
+/* Pin or clear a split-gate post from the current GPS fix — the same rule the
+ * start line uses, so the two behave identically. */
+extern "C" void ui_helper_pin_sector(int gate, int side) {
+    int idx = ui_helper_get_track_idx();
+    const TrackConfig *existing = configManager.getTrack(idx);
+    if (!existing || gate < 0 || gate > 1) return;
+
+    TrackConfig tc = *existing;
+    SectorGate &g  = (gate == 0) ? tc.s1 : tc.s2;
+    bool left      = (side == 0);
+    bool currently = left ? g.left_valid : g.right_valid;
+
+    if (currently) {
+        if (left) { g.left_lat  = 0; g.left_lon  = 0; g.left_valid  = false; }
+        else      { g.right_lat = 0; g.right_lon = 0; g.right_valid = false; }
+    } else {
+        double lat, lon;
+        if (!ui_helper_get_gps(&lat, &lon)) return;   /* no fix — do nothing */
+        if (left) { g.left_lat  = lat; g.left_lon  = lon; g.left_valid  = true; }
+        else      { g.right_lat = lat; g.right_lon = lon; g.right_valid = true; }
+    }
+
+    configManager.setTrack(idx, tc);
+    ui_helper_set_sector_coord(gate, side,
+        left ? g.left_lat  : g.right_lat,
+        left ? g.left_lon  : g.right_lon,
+        left ? g.left_valid : g.right_valid);
+    ui_helper_set_dirty(true);
 }
 
 void ui_track_prev(lv_event_t *) {
@@ -372,6 +414,10 @@ void ui_track_edit_track_name(lv_event_t *) {
 
 enum class CoordField : uint8_t { LAT_L, LON_L, LAT_R, LON_R };
 static CoordField s_kb_coord_field;
+/* -1 = the start line, 0 = S1, 1 = S2. Split gates reuse the same keyboard and
+ * the same LAT_L/LON_L/LAT_R/LON_R field meaning, just against a different
+ * gate — so typing a coordinate works identically on all six rows. */
+static int s_kb_gate = -1;
 
 static void apply_coord_cb(const char *text) {
     double val = atof(text);
@@ -379,6 +425,26 @@ static void apply_coord_cb(const char *text) {
     const TrackConfig *existing = configManager.getTrack(idx);
     if (!existing) return;
     TrackConfig tc = *existing;
+
+    if (s_kb_gate >= 0) {
+        SectorGate &g = (s_kb_gate == 0) ? tc.s1 : tc.s2;
+        switch (s_kb_coord_field) {
+            case CoordField::LAT_L: g.left_lat  = val; g.left_valid  = true; break;
+            case CoordField::LON_L: g.left_lon  = val;                       break;
+            case CoordField::LAT_R: g.right_lat = val; g.right_valid = true; break;
+            case CoordField::LON_R: g.right_lon = val;                       break;
+        }
+        configManager.setTrack(idx, tc);
+        bool left = (s_kb_coord_field == CoordField::LAT_L ||
+                     s_kb_coord_field == CoordField::LON_L);
+        ui_helper_set_sector_coord(s_kb_gate, left ? 0 : 1,
+            left ? g.left_lat  : g.right_lat,
+            left ? g.left_lon  : g.right_lon,
+            left ? g.left_valid : g.right_valid);
+        ui_helper_set_dirty(true);
+        return;
+    }
+
     switch (s_kb_coord_field) {
         case CoordField::LAT_L: tc.left_lat  = val; tc.left_valid  = true; break;
         case CoordField::LON_L: tc.left_lon  = val;                        break;
@@ -394,11 +460,36 @@ static void apply_coord_cb(const char *text) {
 }
 
 static void open_coord_kb(const char *title, CoordField field,
-                            double cur, bool has_val) {
+                            double cur, bool has_val, int gate = -1) {
     s_kb_coord_field = field;
+    s_kb_gate        = gate;
     char buf[24] = "";
+    /* 6 dp ~= 0.1 m, which is well inside GPS noise and enough for a gate. */
     if (has_val) snprintf(buf, sizeof(buf), "%.6f", cur);
     open_keyboard(title, buf, apply_coord_cb, LV_KEYBOARD_MODE_NUMBER);
+}
+
+/* Typing a split-gate coordinate. side: 0 = left post, 1 = right.
+ * is_lat picks latitude over longitude. */
+extern "C" void ui_helper_edit_sector(int gate, int side, int is_lat) {
+    if (gate < 0 || gate > 1) return;
+    int idx = ui_helper_get_track_idx();
+    const TrackConfig *tc = configManager.getTrack(idx);
+    const SectorGate *g = tc ? (gate == 0 ? &tc->s1 : &tc->s2) : nullptr;
+
+    static char title[24];
+    snprintf(title, sizeof(title), "S%d %s %s", gate + 1,
+             side == 0 ? "LEFT" : "RIGHT", is_lat ? "LATITUDE" : "LONGITUDE");
+
+    bool left  = (side == 0);
+    bool valid = g && (left ? g->left_valid : g->right_valid);
+    double cur = !g ? 0.0
+               : is_lat ? (left ? g->left_lat : g->right_lat)
+                        : (left ? g->left_lon : g->right_lon);
+
+    CoordField f = left ? (is_lat ? CoordField::LAT_L : CoordField::LON_L)
+                        : (is_lat ? CoordField::LAT_R : CoordField::LON_R);
+    open_coord_kb(title, f, cur, valid, gate);
 }
 
 void ui_track_edit_lat_l(lv_event_t *) {

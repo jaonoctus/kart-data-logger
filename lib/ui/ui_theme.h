@@ -9,6 +9,9 @@ extern "C" {
 void ui_theme_apply_dark(lv_event_t *e);
 void ui_theme_apply_light(lv_event_t *e);
 void ui_session_clicked(lv_event_t *e);   /* toggle start / stop */
+void ui_helper_pin_sector(int gate, int side);  /* split-gate PIN / RESET */
+void ui_helper_edit_sector(int gate, int side, int is_lat);  /* type a coordinate */
+void ui_helper_set_sector_coord(int gate, int side, double lat, double lon, bool valid);
 void ui_session_stop(lv_event_t *e);      /* stop only (from PanelRecording) */
 void ui_track_prev(lv_event_t *e);        /* navigate to previous track */
 void ui_track_next(lv_event_t *e);        /* navigate to next track */
