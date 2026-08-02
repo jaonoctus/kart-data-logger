@@ -123,6 +123,34 @@ GoProStatus GoProManager::status() const {
 
 /* ========================================================================= */
 
+void GoProManager::suspendRadio() {
+    if (m_suspended) return;
+    m_suspended = true;                     /* stop the task touching NimBLE */
+    vTaskDelay(pdMS_TO_TICKS(250));         /* let it finish the current pass */
+
+    NimBLEClient *client = static_cast<NimBLEClient *>(m_client);
+    if (client && client->isConnected()) client->disconnect();
+    teardown();
+
+    /* deinit(true) destroys every client, so our cached pointers die with it. */
+    m_client = nullptr;
+    NimBLEDevice::deinit(true);
+
+    log_w("GoPro: BLE stack released (WiFi needs the internal RAM)");
+}
+
+void GoProManager::resumeRadio() {
+    if (!m_suspended) return;
+
+    NimBLEDevice::init("kart-dash");
+    NimBLEDevice::setSecurityAuth(true, false, true);
+    NimBLEDevice::setPower(9);
+
+    m_lastAttemptMs = 0;                    /* retry immediately if wanted */
+    m_suspended = false;
+    log_w("GoPro: BLE stack back up");
+}
+
 void GoProManager::taskTrampoline(void *arg) {
     static_cast<GoProManager *>(arg)->task();
 }
@@ -130,8 +158,16 @@ void GoProManager::taskTrampoline(void *arg) {
 void GoProManager::task() {
     for (;;) {
         /* Print anything the notify callback parked for us. Done here because
-         * this task can afford to stall between chunks; the callback cannot. */
+         * this task can afford to stall between chunks; the callback cannot.
+         * Ahead of the suspend check on purpose: it only touches the log, so a
+         * payload parked just before the radio was handed over still gets out. */
         drainDump();
+
+        /* Radio lent to WiFi — NimBLE is deinitialised, so touch nothing. */
+        if (m_suspended) {
+            vTaskDelay(pdMS_TO_TICKS(200));
+            continue;
+        }
 
         uint32_t now = millis();
         NimBLEClient *client = static_cast<NimBLEClient *>(m_client);

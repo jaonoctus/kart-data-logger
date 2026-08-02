@@ -60,6 +60,16 @@ public:
     /* Thread-safe snapshot. */
     GoProStatus status() const;
 
+    /* Hand the radio over. WiFi needs ~50 kB of internal DRAM that it cannot
+     * take from PSRAM, and NimBLE is holding a comparable amount — so the two
+     * cannot coexist here. The camera and the WiFi portal are never wanted at
+     * the same time (one is racing, the other is sitting in the pits pulling
+     * files), so the portal borrows the radio and gives it back.
+     * Safe to call repeatedly; both are no-ops if already in that state. */
+    void suspendRadio();
+    void resumeRadio();
+    bool radioSuspended() const { return m_suspended; }
+
 private:
     static void taskTrampoline(void *arg);
     void        task();
@@ -116,6 +126,7 @@ private:
     GoProStatus m_st = { false, false, false, false, 255, 0 };
 
     volatile bool m_desiredRec   = false;
+    volatile bool m_suspended    = false;   /* radio handed to WiFi */
     uint32_t      m_lastAttemptMs = 0;
     uint32_t      m_lastKeepAliveMs = 0;
     uint32_t      m_lastShutterMs   = 0;
