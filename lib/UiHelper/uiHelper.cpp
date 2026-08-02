@@ -19,6 +19,12 @@ bool          UiHelper::s_cam_linked  = false;
 bool          UiHelper::s_cam_recording = false;
 bool          UiHelper::s_cam_gpslock = false;
 uint8_t       UiHelper::s_cam_batt    = 255;
+lv_obj_t     *UiHelper::s_wifi_panel   = nullptr;
+lv_obj_t     *UiHelper::s_wifi_var     = nullptr;
+lv_obj_t     *UiHelper::s_wifi_btn_lbl = nullptr;
+bool          UiHelper::s_wifi_running = false;
+uint8_t       UiHelper::s_wifi_clients = 0;
+char          UiHelper::s_wifi_ip[20]  = {0};
 
 /* helper */
 static inline lv_color_t C(uint32_t hex) { return lv_color_hex(hex); }
@@ -57,6 +63,8 @@ void UiHelper::init() {
     // stays untouched. The status bar is a SPACE_BETWEEN flex row, so this
     // lands between the DISP and GPS cells on its own.
     build_camera_cell();
+    build_wifi_cell();
+    build_wifi_button();
 
     // Set the theme as saved
     setTheme(DASH_MODE_NIGHT);
@@ -233,6 +241,154 @@ void UiHelper::setCamera(bool linked, bool recording, uint8_t battPct, bool gpsL
 }
 
 /* ============================================================================
+ * WIFI PORTAL — status cell + config-screen toggle
+ * Both built at runtime so the SquareLine project stays untouched. The cell is
+ * hidden entirely while the portal is off: a SoftAP costs ~100 mA, so its
+ * presence on the bar should mean something.
+ * ============================================================================ */
+extern "C" void ui_helper_toggle_wifi(void);   /* implemented in main_display */
+extern "C" void ui_helper_open_sessions(void); /* implemented in main_display */
+
+static void wifi_btn_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) ui_helper_toggle_wifi();
+}
+static void sessions_btn_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) ui_helper_open_sessions();
+}
+
+void UiHelper::build_wifi_cell(void) {
+    if (!ui_panelstatus || s_wifi_var) return;
+
+    s_wifi_panel = lv_obj_create(ui_panelstatus);
+    lv_obj_set_width (s_wifi_panel, LV_SIZE_CONTENT);
+    lv_obj_set_height(s_wifi_panel, LV_SIZE_CONTENT);
+    lv_obj_set_align (s_wifi_panel, LV_ALIGN_CENTER);
+    lv_obj_set_flex_flow(s_wifi_panel, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_wifi_panel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(s_wifi_panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(s_wifi_panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(s_wifi_panel, C(T.bg), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(s_wifi_panel, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(s_wifi_panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_row(s_wifi_panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_column(s_wifi_panel, 5, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    s_wifi_var = lv_label_create(s_wifi_panel);
+    lv_obj_set_width (s_wifi_var, LV_SIZE_CONTENT);
+    lv_obj_set_height(s_wifi_var, LV_SIZE_CONTENT);
+    lv_obj_set_align (s_wifi_var, LV_ALIGN_CENTER);
+    lv_label_set_text(s_wifi_var, LV_SYMBOL_WIFI);
+    lv_obj_set_style_text_font(s_wifi_var, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    lv_obj_move_to_index(s_wifi_panel, 2);
+    refresh_wifi();
+}
+
+/* Shared styling for the runtime-added config-screen buttons, so they are
+ * indistinguishable from the SquareLine ones. */
+lv_obj_t *UiHelper::make_setup_button(const char *text, lv_event_cb_t cb,
+                                      lv_obj_t **out_label) {
+    lv_obj_t *btn = lv_button_create(ui_panelsetupbuttons);
+    lv_obj_set_width (btn, 250);
+    lv_obj_set_height(btn, 50);
+    lv_obj_set_align (btn, LV_ALIGN_TOP_MID);
+    lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_ext_click_area(btn, 5);
+    lv_obj_remove_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(btn, 3, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(btn, C(T.surface2), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(btn, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(btn, C(T.muted), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_opa(btn, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(btn, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+    /* Fixed height + no shrink: inside a scrolling flex column the buttons
+     * would otherwise be squeezed to fit rather than overflow into a scroll. */
+    lv_obj_set_style_flex_grow(btn, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    lv_obj_t *lbl = lv_label_create(btn);
+    lv_obj_set_width (lbl, LV_SIZE_CONTENT);
+    lv_obj_set_height(lbl, LV_SIZE_CONTENT);
+    lv_obj_set_align (lbl, LV_ALIGN_CENTER);
+    lv_label_set_text(lbl, text);
+    lv_obj_set_style_text_color(lbl, C(T.fg), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, NULL);
+    if (out_label) *out_label = lbl;
+    return btn;
+}
+
+void UiHelper::build_wifi_button(void) {
+    if (!ui_panelsetupbuttons || s_wifi_btn_lbl) return;
+
+    /* The panel was built non-scrollable for its original two buttons. With
+     * SESSIONS and WIFI PORTAL added it overflows, so let it scroll rather
+     * than pushing the last button off the bottom where it cannot be reached. */
+    lv_obj_add_flag(ui_panelsetupbuttons, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(ui_panelsetupbuttons, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(ui_panelsetupbuttons, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_flex_align(ui_panelsetupbuttons, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_bottom(ui_panelsetupbuttons, 12, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    /* SESSIONS sits above the portal button — reviewing a run is the more
+     * common reason to come here than moving files off the card. */
+    make_setup_button("SESSIONS", sessions_btn_cb, nullptr);
+    make_setup_button("WIFI PORTAL: OFF", wifi_btn_cb, &s_wifi_btn_lbl);
+    refresh_wifi();
+}
+
+void UiHelper::refresh_wifi(void) {
+    if (s_wifi_panel) {
+        if (s_wifi_running) lv_obj_remove_flag(s_wifi_panel, LV_OBJ_FLAG_HIDDEN);
+        else                lv_obj_add_flag(s_wifi_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_wifi_var) {
+        /* A connected client is the interesting state — it means someone is
+         * actually pulling files, so don't cut the radio. */
+        if (s_wifi_clients > 0)
+            lv_label_set_text_fmt(s_wifi_var, LV_SYMBOL_WIFI " %d", s_wifi_clients);
+        else
+            lv_label_set_text(s_wifi_var, LV_SYMBOL_WIFI);
+        lv_obj_set_style_text_color(s_wifi_var,
+            C(s_wifi_clients > 0 ? T.good : T.accent), 0);
+    }
+    if (s_wifi_btn_lbl) {
+        if (s_wifi_running && s_wifi_ip[0])
+            lv_label_set_text_fmt(s_wifi_btn_lbl, "WIFI PORTAL: %s", s_wifi_ip);
+        else
+            lv_label_set_text(s_wifi_btn_lbl, s_wifi_running ? "WIFI PORTAL: ON" : "WIFI PORTAL: OFF");
+        lv_obj_set_style_text_color(s_wifi_btn_lbl, C(s_wifi_running ? T.accent : T.fg), 0);
+    }
+}
+
+/* A portal that refuses to start must say so — silently staying on OFF looks
+ * exactly like a dead button, which is how this went unnoticed the first time. */
+void UiHelper::setWifiError(void) {
+    s_wifi_running = false;
+    s_wifi_clients = 0;
+    s_wifi_ip[0]   = '\0';
+    refresh_wifi();
+    if (s_wifi_btn_lbl) {
+        lv_label_set_text(s_wifi_btn_lbl, "WIFI PORTAL: FAILED");
+        lv_obj_set_style_text_color(s_wifi_btn_lbl, C(T.bad), 0);
+    }
+}
+
+void UiHelper::setWifi(bool running, uint8_t clients, const char *ip) {
+    bool same = (running == s_wifi_running) && (clients == s_wifi_clients) &&
+                (ip ? strncmp(ip, s_wifi_ip, sizeof(s_wifi_ip)) == 0 : s_wifi_ip[0] == '\0');
+    if (same) return;
+
+    s_wifi_running = running;
+    s_wifi_clients = clients;
+    if (ip) { strncpy(s_wifi_ip, ip, sizeof(s_wifi_ip) - 1); s_wifi_ip[sizeof(s_wifi_ip) - 1] = '\0'; }
+    else    { s_wifi_ip[0] = '\0'; }
+    refresh_wifi();
+}
+
+/* ============================================================================
  * TRACK SETUP
  * ============================================================================ */
 
@@ -275,8 +431,9 @@ void UiHelper::setDirty(bool dirty) {
 void UiHelper::setTheme(dash_mode_t mode) {
     T = (mode == DASH_MODE_DAY) ? THEME_DAY : THEME_NIGHT;
 
-    /* ----- Status bar (runtime-built GoPro cell) ----- */
+    /* ----- Runtime-built cells (GoPro, WiFi portal) ----- */
     refresh_camera();
+    refresh_wifi();
 
     /* ----- Config ----- */
     lv_obj_set_style_bg_color(ui_configscreen,      C(T.bg), LV_PART_MAIN);

@@ -22,6 +22,19 @@ extern "C" {
 #include "GoProManager.h"
 #endif
 
+#if defined(ENABLE_WEB_PORTAL)
+#include "WebPortal.h"
+#endif
+
+#include "SessionBrowser.h"
+
+// Opens the on-device session review screens. Called from the config screen,
+// already in LVGL context — the browser loads a placeholder and repaints before
+// the (slow) SD read, so the press feels immediate.
+extern "C" void ui_helper_open_sessions(void) {
+    sessionBrowser.openList();
+}
+
 #if defined(ENABLE_IMU)
 #include "ImuManager.h"
 #include "CalibrationManager.h"
@@ -43,6 +56,45 @@ GpsManager gps(GPS_STANDALONE_RX, GPS_STANDALONE_TX);
 GoProManager goPro;
 #define GOPRO_UI_INTERVAL_MS 500
 static uint32_t lastGoProUiMs = 0;
+#endif
+
+#if defined(ENABLE_WEB_PORTAL)
+WebPortal webPortal;
+#define WEB_PORTAL_UI_INTERVAL_MS 1000
+static uint32_t lastWebUiMs = 0;
+
+// Called from the config-screen button (LVGL context). start() brings up the
+// SoftAP and HTTP server, which takes a moment — acceptable here because the
+// user just pressed a button and the portal task does the serving.
+extern "C" void ui_helper_toggle_wifi(void) {
+    if (webPortal.isRunning()) {
+        webPortal.stop();
+#if defined(ENABLE_GOPRO)
+        goPro.resumeRadio();
+#endif
+        uiHelper.setWifi(false, 0, nullptr);
+        return;
+    }
+
+    // WiFi needs ~50 kB of internal DRAM and cannot use PSRAM; NimBLE is
+    // holding a comparable amount, so the BLE stack stands down first.
+    // Otherwise esp_wifi_init fails with ESP_ERR_NO_MEM.
+#if defined(ENABLE_GOPRO)
+    goPro.suspendRadio();
+#endif
+    bool up = webPortal.start();
+    if (!up) {
+#if defined(ENABLE_GOPRO)
+        goPro.resumeRadio();      // give it back, we did not need it after all
+#endif
+        uiHelper.setWifiError();  // say so on the button rather than sit silent
+        return;
+    }
+    String wip = webPortal.ip();
+    uiHelper.setWifi(true, webPortal.clients(), wip.c_str());
+}
+#else
+extern "C" void ui_helper_toggle_wifi(void) {}
 #endif
 
 // Latest assembled telemetry frame. Written by loop() from the local GPS (plus
@@ -208,7 +260,6 @@ void syncUI() {
             s_lapCount++;
             uint64_t lt = lapManager.getLastLapTime();
             uint64_t bt = lapManager.getBestLapTime();
-            uint64_t pt = lapManager.getPreviousLapTime();
             bool isBest = (lt == bt && bt != 0 && bt != 0xFFFFFFFFFFFFFFFFULL);
 
             char lapStr[20], bestStr[20];
@@ -230,8 +281,13 @@ void syncUI() {
 
             uiHelper.setLap(s_lapCount, lapStr, bestStr);
 
-            if (pt > 0) {
-                int64_t deltaMs = (int64_t)lt - (int64_t)pt;
+            // Delta is measured against the best lap as it stood before this
+            // one — that is the time you were chasing. (Against the *current*
+            // best it would read 0.00 on every personal best; against the
+            // previous lap it just says whether you improved on one sample.)
+            uint64_t pb = lapManager.getPreviousBestLapTime();
+            if (pb != 0 && pb != 0xFFFFFFFFFFFFFFFFULL) {
+                int64_t deltaMs = (int64_t)lt - (int64_t)pb;
                 uiHelper.setDelta(fabsf((float)deltaMs / 1000.0f), deltaMs <= 0);
             }
 
@@ -356,6 +412,11 @@ void loop() {
 
     esp_task_wdt_reset();   // feed the display-wedge watchdog (always on)
 
+    // Session analysis runs here, deliberately before the display lock is
+    // taken: streaming a log takes many seconds, and doing it while holding the
+    // lock would block this task and trip the watchdog.
+    sessionBrowser.service();
+
 #if defined(ENABLE_IMU)
     if (imuReady) {
         float currentSteering = calibManager.getSteeringAngle();
@@ -440,6 +501,17 @@ void loop() {
         lastDisplayBattPct = cachedDisplayBattPct;
         uiHelper.setDisplay(cachedDisplayBattPct);
     }
+
+#if defined(ENABLE_WEB_PORTAL)
+    // Client count is the only thing that changes while the portal is up, and
+    // it only matters at human speed.
+    if (now - lastWebUiMs >= WEB_PORTAL_UI_INTERVAL_MS) {
+        lastWebUiMs = now;
+        bool up = webPortal.isRunning();
+        String wip = up ? webPortal.ip() : String();
+        uiHelper.setWifi(up, webPortal.clients(), up ? wip.c_str() : nullptr);
+    }
+#endif
 
 #if defined(ENABLE_GOPRO)
     // Camera state is pushed by the GoPro over BLE; mirror it onto the status

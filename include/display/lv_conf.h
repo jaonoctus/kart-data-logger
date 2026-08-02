@@ -603,7 +603,7 @@
 
 #define LV_USE_CANVAS     1
 
-#define LV_USE_CHART      0
+#define LV_USE_CHART      0   /* unused: SessionBrowser draws its trace on a canvas */
 
 #define LV_USE_CHECKBOX   0
 
@@ -626,7 +626,7 @@
 
 #define LV_USE_LINE       1
 
-#define LV_USE_LIST       0
+#define LV_USE_LIST       1   /* session file list (lib/SessionBrowser) */
 
 #define LV_USE_LOTTIE     0  /*Requires: lv_canvas, thorvg */
 
@@ -657,7 +657,7 @@
     #define LV_TEXTAREA_DEF_PWD_SHOW_TIME 1500    /*ms*/
 #endif
 
-#define LV_USE_TABLE      0
+#define LV_USE_TABLE      1   /* session lap table (lib/SessionBrowser) */
 
 #define LV_USE_TABVIEW    0
 

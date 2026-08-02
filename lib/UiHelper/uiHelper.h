@@ -53,6 +53,9 @@ public:
     void setGps(uint8_t pct);                          /* number of satellites */
     void setCamera(bool linked, bool recording,        /* GoPro status cell */
                    uint8_t battPct, bool gpsLock);
+    void setWifi(bool running, uint8_t clients,        /* WiFi portal cell  */
+                 const char *ip);
+    void setWifiError(void);                           /* portal failed to start */
     void setTheme(dash_mode_t mode);                   /* day / night swap */
     void setSessionState(bool active);                 /* updates button label + recording panel */
     void tickRecordingPanel();                         /* call every frame to drive the blink */
@@ -68,6 +71,11 @@ private:
     static uint32_t gps_color(uint8_t n);
     static void build_camera_cell(void);
     static void refresh_camera(void);
+    static void build_wifi_cell(void);
+    static void build_wifi_button(void);
+    static void refresh_wifi(void);
+    static lv_obj_t *make_setup_button(const char *text, lv_event_cb_t cb,
+                                       lv_obj_t **out_label);
     static void refresh_track_name(void);
     static void refresh_coord_row(setup_line_side_t side);
     static void refresh_dirty(void);
@@ -87,6 +95,14 @@ private:
     static bool      s_cam_recording;
     static bool      s_cam_gpslock;
     static uint8_t   s_cam_batt;
+
+    /* WiFi portal cell + config-screen toggle, also built at runtime. */
+    static lv_obj_t *s_wifi_panel;
+    static lv_obj_t *s_wifi_var;
+    static lv_obj_t *s_wifi_btn_lbl;
+    static bool      s_wifi_running;
+    static uint8_t   s_wifi_clients;
+    static char      s_wifi_ip[20];
 };
 
 #endif // UI_HELPER_H
