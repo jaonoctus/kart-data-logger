@@ -84,6 +84,19 @@ bool ConfigManager::saveTracks() {
             snprintf(buf, sizeof(buf), "%d_right_lat=%.8f", i, _tracks[i].right_lat); f.println(buf);
             snprintf(buf, sizeof(buf), "%d_right_lon=%.8f", i, _tracks[i].right_lon); f.println(buf);
         }
+        /* Sector gates, written only when set so a track without them stays
+         * as terse as it was before sectors existed. */
+        const SectorGate *sg[2] = { &_tracks[i].s1, &_tracks[i].s2 };
+        for (int s = 0; s < 2; s++) {
+            if (sg[s]->left_valid) {
+                snprintf(buf, sizeof(buf), "%d_s%d_left_lat=%.8f",  i, s + 1, sg[s]->left_lat);  f.println(buf);
+                snprintf(buf, sizeof(buf), "%d_s%d_left_lon=%.8f",  i, s + 1, sg[s]->left_lon);  f.println(buf);
+            }
+            if (sg[s]->right_valid) {
+                snprintf(buf, sizeof(buf), "%d_s%d_right_lat=%.8f", i, s + 1, sg[s]->right_lat); f.println(buf);
+                snprintf(buf, sizeof(buf), "%d_s%d_right_lon=%.8f", i, s + 1, sg[s]->right_lon); f.println(buf);
+            }
+        }
     }
     f.close();
     log_i("ConfigManager: saved %d tracks", _track_count);
@@ -173,6 +186,16 @@ bool ConfigManager::parseTracks(const String &text) {
         else if (field == "left_lon")  { _tracks[idx].left_lon   = val.toDouble(); }
         else if (field == "right_lat") { _tracks[idx].right_lat  = val.toDouble(); _tracks[idx].right_valid = true; }
         else if (field == "right_lon") { _tracks[idx].right_lon  = val.toDouble(); }
+        /* Sector split gates. Absent in older files, which is fine — the track
+         * then has no sectors and only whole laps are timed. */
+        else if (field == "s1_left_lat")  { _tracks[idx].s1.left_lat   = val.toDouble(); _tracks[idx].s1.left_valid  = true; }
+        else if (field == "s1_left_lon")  { _tracks[idx].s1.left_lon   = val.toDouble(); }
+        else if (field == "s1_right_lat") { _tracks[idx].s1.right_lat  = val.toDouble(); _tracks[idx].s1.right_valid = true; }
+        else if (field == "s1_right_lon") { _tracks[idx].s1.right_lon  = val.toDouble(); }
+        else if (field == "s2_left_lat")  { _tracks[idx].s2.left_lat   = val.toDouble(); _tracks[idx].s2.left_valid  = true; }
+        else if (field == "s2_left_lon")  { _tracks[idx].s2.left_lon   = val.toDouble(); }
+        else if (field == "s2_right_lat") { _tracks[idx].s2.right_lat  = val.toDouble(); _tracks[idx].s2.right_valid = true; }
+        else if (field == "s2_right_lon") { _tracks[idx].s2.right_lon  = val.toDouble(); }
     }
 
     _track_count = (found_count >= 0) ? found_count : (max_idx + 1);

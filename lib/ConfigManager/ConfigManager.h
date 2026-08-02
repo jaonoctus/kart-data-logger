@@ -3,14 +3,34 @@
 
 #define CONFIG_MAX_TRACKS 16
 
-struct TrackConfig {
-    char   name[48];
+/* A split gate: two posts, crossed between them, exactly like the finish
+ * line. Optional per track — a track with no sector gates simply times whole
+ * laps, which is what every existing tracks.ini on a card does. */
+struct SectorGate {
     double left_lat;
     double left_lon;
     bool   left_valid;
     double right_lat;
     double right_lon;
     bool   right_valid;
+
+    bool usable() const { return left_valid && right_valid; }
+};
+
+struct TrackConfig {
+    char   name[48];
+    /* Finish line. Also serves as the END sector gate. */
+    double left_lat;
+    double left_lon;
+    bool   left_valid;
+    double right_lat;
+    double right_lon;
+    bool   right_valid;
+
+    /* Intermediate split gates. S1 closes sector 1, S2 closes sector 2, and
+     * the finish line above closes the third. */
+    SectorGate s1;
+    SectorGate s2;
 };
 
 // 0 = dark (default), 1 = light
