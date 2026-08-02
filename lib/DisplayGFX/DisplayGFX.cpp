@@ -183,10 +183,21 @@ extern "C" lv_display_t *bsp_display_start_with_config(const bsp_display_cfg_t *
     s_disp = lv_display_create(LV_HOR_RES, LV_VER_RES);
     lv_display_set_flush_cb(s_disp, gfx_flush_cb);
 
-    // 5. Two partial draw buffers, 40 lines each (RGB565 = 2 bytes/px). Prefer
-    // INTERNAL RAM (LVGL renders into these every frame; PSRAM is much slower for
-    // that). Fall back to PSRAM only if internal is exhausted.
-    const uint32_t buf_px    = (uint32_t)LV_HOR_RES * 40;
+    // 5. Two partial draw buffers (RGB565 = 2 bytes/px). Prefer INTERNAL RAM
+    // (LVGL renders into these every frame; PSRAM is much slower for that).
+    // Fall back to PSRAM only if internal is exhausted.
+    //
+    // GFX_DRAW_LINES is a memory/latency knob, and cheap in this backend: the
+    // flush callback only copies into the full-frame canvas and blits once, on
+    // the last fragment. Halving the buffers doubles the memcpy count but not
+    // the QSPI traffic, so the cost is small — while 40 lines held 76.8 kB of
+    // internal DRAM, which is the same scarce pool WiFi must allocate from and
+    // cannot take from PSRAM. At 16 lines that drops to ~30 kB, leaving room
+    // for the SoftAP to come up.
+#ifndef GFX_DRAW_LINES
+#define GFX_DRAW_LINES 16
+#endif
+    const uint32_t buf_px    = (uint32_t)LV_HOR_RES * GFX_DRAW_LINES;
     const uint32_t buf_bytes = buf_px * 2;
     void *b1 = heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     void *b2 = heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
