@@ -20,3 +20,6 @@ __pycache__/
 # tools/lapreplay/gps_raw_to_log.py — regenerable, so not tracked.
 data/replay.csv
 tools/data/replay_*.csv
+
+# Device config pulled off the card for inspection — not repo state.
+/tracks.ini
