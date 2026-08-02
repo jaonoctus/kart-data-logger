@@ -4,6 +4,8 @@
 #include <Arduino.h>
 #include "esp_bsp.h"
 #include "ui.h"
+#include "ui_dash2.h"     /* the v2 dashboard replaces SquareLine's */
+#include "LapManager.h"   /* LAP_SECTOR_NO_DELTA for the sector band */
 #include "display.h"
 #include "lv_port.h"
 
@@ -56,6 +58,13 @@ public:
     void setWifi(bool running, uint8_t clients,        /* WiFi portal cell  */
                  const char *ip);
     void setWifiError(void);                           /* portal failed to start */
+
+    /* Sector band. `current` is the sector being driven (-1 none); `runningMs`
+     * is its elapsed time. For each closed sector pass its delta vs its own
+     * previous best in ms, or LAP_SECTOR_NO_DELTA when there is nothing to
+     * compare with. Self-filtering: unchanged state costs nothing. */
+    void setSectors(int current, uint32_t runningMs,
+                    const int64_t *deltaMs, const bool *valid);
     void setTheme(dash_mode_t mode);                   /* day / night swap */
     void setSessionState(bool active);                 /* updates button label + recording panel */
     void tickRecordingPanel();                         /* call every frame to drive the blink */
@@ -64,6 +73,11 @@ public:
     int  getTrackIdx(void) { return s_track_idx; };
     void setStartL(double lat, double lon, bool valid);
     void setStartR(double lat, double lon, bool valid);
+
+    /* Split gates on the track setup screen. gate 0 = S1, 1 = S2. */
+    void setSectorCoord(int gate, setup_line_side_t side,
+                        double lat, double lon, bool valid);
+
     void setDirty(bool dirty);
 
 private:
@@ -71,6 +85,7 @@ private:
     static uint32_t gps_color(uint8_t n);
     static void build_camera_cell(void);
     static void refresh_camera(void);
+    static void build_rec_cell(void);
     static void build_wifi_cell(void);
     static void build_wifi_button(void);
     static void refresh_wifi(void);
@@ -79,6 +94,15 @@ private:
     static void refresh_track_name(void);
     static void refresh_coord_row(setup_line_side_t side);
     static void refresh_dirty(void);
+
+    /* Split-gate rows, built at runtime onto the SquareLine track screen so the
+     * generated file stays untouched. Same widget tree and styling as the
+     * START LINE rows above them. */
+    static void build_sector_rows(void);
+    static void refresh_sector_row(int gate, setup_line_side_t side);
+    struct GateRow { lv_obj_t *lat, *lon, *empty, *pin_lbl; setup_coord_t c; };
+    static GateRow s_gate[2][2];      /* [S1|S2][L|R] */
+    static bool    s_gate_built;
 
     static const char *s_track_names[SETUP_MAX_TRACKS];
     static int        s_track_count;
@@ -97,6 +121,10 @@ private:
     static uint8_t   s_cam_batt;
 
     /* WiFi portal cell + config-screen toggle, also built at runtime. */
+    static lv_obj_t *s_rec_panel;
+    static lv_obj_t *s_rec_dot;
+    static lv_obj_t *s_rec_lbl;
+    static bool      s_rec_active;
     static lv_obj_t *s_wifi_panel;
     static lv_obj_t *s_wifi_var;
     static lv_obj_t *s_wifi_btn_lbl;

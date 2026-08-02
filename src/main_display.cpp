@@ -126,6 +126,17 @@ static uint32_t lastHealthReportMs = 0;
 // Lap state — updated inside syncUI()
 static uint8_t s_lapCount = 0;
 
+// Push a track's split gates into LapManager. Must follow setFinishLine(),
+// which clears them — the splits belong to a track, so a new finish line
+// invalidates them.
+static void applySectorGates(const TrackConfig *t) {
+    if (!t) return;
+    FinishLine s1 = { t->s1.left_lat, t->s1.left_lon, t->s1.right_lat, t->s1.right_lon };
+    FinishLine s2 = { t->s2.left_lat, t->s2.left_lon, t->s2.right_lat, t->s2.right_lon };
+    lapManager.setSectorGates(t->s1.usable() ? &s1 : nullptr,
+                              t->s2.usable() ? &s2 : nullptr);
+}
+
 // ============================================================================
 // DISPLAY-WEDGE SAFETY NET (ALWAYS ON) - "indestructible" recovery.
 // The AXS15231B QSPI panel write (panel_axs15231b_draw_bitmap) can occasionally
@@ -178,6 +189,11 @@ static void reportRecoveryOnBoot() {
 extern "C" void ui_helper_apply_finish_line(double ll, double ln, double rl, double rn) {
     FinishLine fl = { ll, ln, rl, rn };
     lapManager.setFinishLine(fl);
+    // setFinishLine() clears the split gates by design — a new finish line
+    // belongs to a different track, so stale splits would be wrong. That means
+    // every caller must put them back, or saving a track silently kills sector
+    // timing until the next reboot.
+    applySectorGates(configManager.getTrack((int)configManager.getSelectedTrack()));
     s_lapCount = 0; // Reset lap counter when finish line changes
 }
 
@@ -211,6 +227,7 @@ extern "C" void ui_helper_toggle_session() {
             FinishLine fl = { active->left_lat, active->left_lon,
                               active->right_lat, active->right_lon };
             lapManager.setFinishLine(fl);
+            applySectorGates(active);
             s_lapCount = 0;
         }
     }
@@ -293,6 +310,21 @@ void syncUI() {
 
             log_i("Lap %d completed: %s%s (best: %s)", s_lapCount, lapStr, isBest ? " [BEST]" : "", bestStr);
         }
+    }
+
+    // Sector band. Driven every frame from LapManager rather than on crossing
+    // events, so the display cannot drift out of step with the timer — the
+    // helper diffs and only repaints what changed.
+    {
+        int64_t sd[3];
+        bool    sv[3];
+        for (int i = 0; i < 3; i++) {
+            sd[i] = lapManager.getSectorDelta(i);
+            sv[i] = lapManager.isSectorValid(i);
+        }
+        uiHelper.setSectors(lapManager.hasSectors() ? lapManager.getCurrentSector() : -1,
+                            (uint32_t)lapManager.getRunningSplitMs(telemetry.timestamp),
+                            sd, sv);
     }
 
     // Drive the recording panel blink
@@ -385,10 +417,19 @@ void setup() {
     if (active) {
         uiHelper.setStartL(active->left_lat, active->left_lon, active->left_valid);
         uiHelper.setStartR(active->right_lat, active->right_lon, active->right_valid);
+        // The split-gate rows need populating here too. Stepping tracks calls
+        // apply_track_coords() which does all six, but nothing does at boot —
+        // so a tracks.ini with sectors still showed "-- not set --" until you
+        // touched the stepper.
+        uiHelper.setSectorCoord(0, SETUP_LINE_L, active->s1.left_lat,  active->s1.left_lon,  active->s1.left_valid);
+        uiHelper.setSectorCoord(0, SETUP_LINE_R, active->s1.right_lat, active->s1.right_lon, active->s1.right_valid);
+        uiHelper.setSectorCoord(1, SETUP_LINE_L, active->s2.left_lat,  active->s2.left_lon,  active->s2.left_valid);
+        uiHelper.setSectorCoord(1, SETUP_LINE_R, active->s2.right_lat, active->s2.right_lon, active->s2.right_valid);
         if (active->left_valid && active->right_valid) {
             FinishLine fl = { active->left_lat, active->left_lon,
                               active->right_lat, active->right_lon };
             lapManager.setFinishLine(fl);
+            applySectorGates(active);
         }
     }
 

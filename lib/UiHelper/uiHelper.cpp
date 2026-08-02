@@ -19,6 +19,10 @@ bool          UiHelper::s_cam_linked  = false;
 bool          UiHelper::s_cam_recording = false;
 bool          UiHelper::s_cam_gpslock = false;
 uint8_t       UiHelper::s_cam_batt    = 255;
+lv_obj_t     *UiHelper::s_rec_panel    = nullptr;
+lv_obj_t     *UiHelper::s_rec_dot      = nullptr;
+lv_obj_t     *UiHelper::s_rec_lbl      = nullptr;
+bool          UiHelper::s_rec_active   = false;
 lv_obj_t     *UiHelper::s_wifi_panel   = nullptr;
 lv_obj_t     *UiHelper::s_wifi_var     = nullptr;
 lv_obj_t     *UiHelper::s_wifi_btn_lbl = nullptr;
@@ -28,6 +32,14 @@ char          UiHelper::s_wifi_ip[20]  = {0};
 
 /* helper */
 static inline lv_color_t C(uint32_t hex) { return lv_color_hex(hex); }
+
+/* Tap the speed readout to reach setup — the affordance the SquareLine
+ * dashboard had, restored on the v2 screen. */
+static void dash_speed_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    _ui_screen_change(&ui_configscreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 500, 0,
+                      &ui_configscreen_screen_init);
+}
 
 // C bridge called from lib/ui/ui_theme.cpp (0=dark, 1=light)
 extern "C" void ui_helper_set_theme(int mode) {
@@ -54,6 +66,30 @@ void UiHelper::init() {
     // Initialize the UI
     ui_init();
 
+    // Swap SquareLine's dashboard for the v2 design (lib/DashV2). Done as a
+    // swap rather than by editing the generated file so every navigation
+    // reference to ui_dashboardscreen stays valid: build the replacement,
+    // load it, then let SquareLine's own destructor delete the old screen and
+    // NULL all of its widget globals — which is what stops the setters below
+    // from touching freed objects.
+    {
+        lv_obj_t *fresh = lv_obj_create(NULL);
+        ui_dash2_init(fresh);
+        lv_screen_load(fresh);
+        ui_dashboardscreen_screen_destroy();
+        ui_dashboardscreen = fresh;
+
+        // Tap the speed to reach setup, as the SquareLine dashboard did. That
+        // handler lived on ui_labelspeedvar and died with it; labels are not
+        // clickable by default, hence the flag and the fat hit area.
+        lv_obj_t *spd = ui_dash2_get_speed_obj();
+        if (spd) {
+            lv_obj_add_flag(spd, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_ext_click_area(spd, 24);
+            lv_obj_add_event_cb(spd, dash_speed_cb, LV_EVENT_CLICKED, NULL);
+        }
+    }
+
     //Reparent the status bar panel to the persistent top layer
     lv_obj_set_parent(ui_panelstatus, lv_layer_top());
     // Delete the now-empty Screen_TopBar to save RAM
@@ -62,6 +98,7 @@ void UiHelper::init() {
     // GoPro cell — added here rather than in SquareLine so the generated UI
     // stays untouched. The status bar is a SPACE_BETWEEN flex row, so this
     // lands between the DISP and GPS cells on its own.
+    build_rec_cell();
     build_camera_cell();
     build_wifi_cell();
     build_wifi_button();
@@ -82,6 +119,7 @@ void UiHelper::init() {
     s_line_r      = { 0, 0, false };
 
     refresh_track_name();
+    build_sector_rows();
     refresh_coord_row(SETUP_LINE_L);
     refresh_coord_row(SETUP_LINE_R);
     refresh_dirty();
@@ -93,47 +131,23 @@ void UiHelper::init() {
  * UPDATE
  * ============================================================================ */
 void UiHelper::setSpeed(int kmh) {
-    if (!ui_labelspeedvar) return;
-    lv_label_set_text_fmt(ui_labelspeedvar, "%d", kmh);
+    ui_dash2_set_speed(kmh);
 }
 
-void UiHelper::setGx(float gx) {
-    if (!ui_bargx) return;
-    int v = (int)(gx * 100.0f);
-    if (v >  300) v =  300;
-    if (v < -300) v = -300;
-    lv_bar_set_value(ui_bargx, v, LV_ANIM_ON);
-    lv_label_set_text_fmt(ui_labelgxvar, "G-X %.2f", gx);
-}
+/* The v2 design drops the G-meter. Kept as no-ops so callers (and the IMU
+ * build) need no #ifdefs — and nothing is lost today, since ENABLE_IMU is off
+ * and these have been reporting a flat zero. */
+void UiHelper::setGx(float gx) { (void)gx; }
 
-void UiHelper::setGy(float gy) {
-    if (!ui_bargy) return;
-    /* invert sign so that acceleration (negative gy) fills above center,
-     * matching the web prototype. */
-    int v = (int)(-gy * 100.0f);
-    if (v >  200) v =  200;
-    if (v < -200) v = -200;
-    lv_bar_set_value(ui_bargy, v, LV_ANIM_ON);
-    lv_label_set_text_fmt(ui_labelgyvar, "%.2f G-Y", gy);
-}
+void UiHelper::setGy(float gy) { (void)gy; }
 
 void UiHelper::setLap(uint8_t lap_num, const char *lap_str, const char *best_str) {
-    if (ui_labellapnum) lv_label_set_text_fmt(ui_labellapnum, "LAP %d", lap_num);
-    if (ui_labellapvar && lap_str)  lv_label_set_text(ui_labellapvar, lap_str);
-    if (ui_labellapbest  && best_str) lv_label_set_text_fmt(ui_labellapbest, "BEST %s", best_str);
+    ui_dash2_set_lap((int)lap_num, lap_str, best_str);
 }
 
+/* v2 takes a signed delta; ours has always been magnitude + direction. */
 void UiHelper::setDelta(float seconds, bool faster) {
-    if (!ui_paneldelta) return;
-    uint32_t bg = faster ? T.good_deep : T.bad_deep;
-    uint32_t fg = faster ? T.good      : T.bad;
-    lv_obj_set_style_bg_color    (ui_paneldelta,       C(bg), 0);
-    lv_obj_set_style_border_color(ui_paneldelta,       C(fg), 0);
-    lv_obj_set_style_text_color  (ui_labelarrow, C(fg), 0);
-    lv_obj_set_style_text_color  (ui_labeldeltavar,     C(fg), 0);
-    lv_obj_set_style_text_color  (ui_labeldeltas,     C(fg), 0);
-    lv_label_set_text(ui_labelarrow, faster ? LV_SYMBOL_UP : LV_SYMBOL_DOWN);
-    lv_label_set_text_fmt(ui_labeldeltavar, "%.2f", fabsf(seconds));
+    ui_dash2_set_delta(faster ? -fabsf(seconds) : fabsf(seconds));
 }
 
 void UiHelper::setDisplay(uint8_t pct) {
@@ -157,6 +171,47 @@ void UiHelper::setGps(uint8_t pct) {
         uint32_t hc = gps_color(pct);
         lv_label_set_text_fmt(ui_labelvargps, "%d", pct);
         lv_obj_set_style_text_color(ui_labelvargps, C(hc), 0);
+    }
+}
+
+/* ============================================================================
+ * SECTOR BAND
+ * Mirrors LapManager's state onto the v2 band. Diffed here rather than in
+ * ui_dash2, whose setters each trigger a full band repaint — and the running
+ * split arrives at telemetry rate.
+ * ============================================================================ */
+void UiHelper::setSectors(int current, uint32_t runningMs,
+                          const int64_t *deltaMs, const bool *valid) {
+    static int      lastCurrent = -2;
+    static int64_t  lastDelta[3] = { 1, 1, 1 };   /* impossible sentinel */
+    static uint32_t lastSplitTenths = 0xFFFFFFFF;
+
+    for (int i = 0; i < 3; i++) {
+        int64_t d = (valid && valid[i]) ? deltaMs[i] : LapManager::LAP_SECTOR_NO_DELTA;
+        if (d == lastDelta[i]) continue;
+        lastDelta[i] = d;
+        if (d == LapManager::LAP_SECTOR_NO_DELTA)
+            ui_dash2_set_sector((dash2_sector_t)i, DASH2_SECTOR_PENDING, 0.0f);
+        else
+            ui_dash2_close_sector((dash2_sector_t)i, (float)d / 1000.0f);
+    }
+
+    if (current != lastCurrent) {
+        lastCurrent = current;
+        if (current >= 0 && current < 3) ui_dash2_enter_sector((dash2_sector_t)current);
+    }
+
+    /* The running split only needs to move at a readable rate; repainting the
+     * band on every telemetry frame would be wasted work. */
+    if (current >= 0) {
+        uint32_t tenths = runningMs / 100;
+        if (tenths != lastSplitTenths) {
+            lastSplitTenths = tenths;
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%u.%02u",
+                     (unsigned)(runningMs / 1000), (unsigned)((runningMs % 1000) / 10));
+            ui_dash2_set_running_split(buf);
+        }
     }
 }
 
@@ -389,6 +444,200 @@ void UiHelper::setWifi(bool running, uint8_t clients, const char *ip) {
 }
 
 /* ============================================================================
+ * SPLIT-GATE ROWS (track setup)
+ * Two more gates below START LINE, built at runtime so the SquareLine file
+ * stays untouched. Styling is copied from ui_panellinel rather than
+ * approximated — same 32 px height, same surface, rule border, radius and
+ * padding — so the four new rows are indistinguishable from the two above.
+ * ============================================================================ */
+extern "C" void ui_helper_pin_sector(int gate, int side);   /* ui_theme.cpp */
+extern "C" void ui_helper_edit_sector(int gate, int side, int is_lat);
+
+/* Tapping a coordinate (or "-- not set --") types it, exactly as the START
+ * LINE rows do. user_data packs gate/side/is_lat. */
+static void gate_edit_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    intptr_t t = (intptr_t)lv_event_get_user_data(e);
+    ui_helper_edit_sector((int)(t >> 2), (int)((t >> 1) & 1), (int)(t & 1));
+}
+
+/* Make a coordinate label behave like the generated ones: clickable, with a
+ * hit area tall enough to catch a gloved finger on a 32 px row. */
+static void gate_make_editable(lv_obj_t *lbl, int gate, int side, int is_lat) {
+    lv_obj_add_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(lbl, 10);
+    lv_obj_add_event_cb(lbl, gate_edit_cb, LV_EVENT_CLICKED,
+                        (void *)(intptr_t)((gate << 2) | (side << 1) | is_lat));
+}
+
+UiHelper::GateRow UiHelper::s_gate[2][2] = {};
+bool UiHelper::s_gate_built = false;
+
+static void gate_pin_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    intptr_t tag = (intptr_t)lv_event_get_user_data(e);
+    ui_helper_pin_sector((int)(tag >> 1), (int)(tag & 1));
+}
+
+/* Section caption in the same style as the START LINE header. */
+static lv_obj_t *gate_header(lv_obj_t *parent, const char *title, const char *hint) {
+    lv_obj_t *p = lv_obj_create(parent);
+    lv_obj_set_width(p, lv_pct(100));
+    lv_obj_set_height(p, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(p, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(p, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+    lv_obj_remove_flag(p, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_color(p, C(T.bg), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(p, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(p, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(p, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_top(p, 6, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    lv_obj_t *t = lv_label_create(p);
+    lv_label_set_text(t, title);
+    lv_obj_set_style_text_color(t, C(T.fg), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(t, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    lv_obj_t *h = lv_label_create(p);
+    lv_label_set_text(h, hint);
+    lv_obj_set_style_text_color(h, C(T.muted), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(h, &lv_font_montserrat_12, LV_PART_MAIN | LV_STATE_DEFAULT);
+    return p;
+}
+
+void UiHelper::build_sector_rows(void) {
+    if (!ui_panelcoord || s_gate_built) return;
+    s_gate_built = true;
+
+    /* The body was sized for two coordinate rows. With six it overflows, so it
+     * has to scroll or the SAVE bar becomes unreachable.
+     *
+     * It also has to be shortened. SquareLine gave it y=66 h=254, which runs to
+     * y=320 — straight under the action bar at y=272. Nothing noticed while the
+     * content was short, but once it scrolls the last 48 px can never be
+     * reached: scrolling stops at the content end, which is still behind the
+     * bar, and the elastic bounce springs it back. Padding does not fix that —
+     * the container itself must stop where the bar starts. */
+    if (ui_panelbody) {
+        const int ACTION_BAR_Y = 272, BODY_Y = 66;
+        lv_obj_set_height(ui_panelbody, ACTION_BAR_Y - BODY_Y);
+        lv_obj_add_flag(ui_panelbody, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_scroll_dir(ui_panelbody, LV_DIR_VER);
+        lv_obj_set_scrollbar_mode(ui_panelbody, LV_SCROLLBAR_MODE_AUTO);
+        lv_obj_set_style_pad_bottom(ui_panelbody, 6, LV_PART_MAIN | LV_STATE_DEFAULT);
+    }
+
+    static const char *TITLE[2] = { "SECTOR 1", "SECTOR 2" };
+    static const char *HINT[2]  = { "closes S1", "closes S2" };
+
+    for (int g = 0; g < 2; g++) {
+        gate_header(ui_panelcoord, TITLE[g], HINT[g]);
+
+        for (int s = 0; s < 2; s++) {
+            GateRow &row = s_gate[g][s];
+
+            lv_obj_t *p = lv_obj_create(ui_panelcoord);
+            lv_obj_set_height(p, 32);
+            lv_obj_set_width(p, lv_pct(100));
+            lv_obj_set_flex_flow(p, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(p, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            lv_obj_remove_flag(p, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_set_style_radius(p, 5, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_color(p, C(T.surface), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_opa(p, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_border_color(p, C(T.rule), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_border_opa(p, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_border_width(p, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_pad_left(p, 10, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_pad_right(p, 4, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_pad_top(p, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_pad_bottom(p, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_pad_column(p, 8, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+            lv_obj_t *tag = lv_label_create(p);
+            lv_label_set_text(tag, s == SETUP_LINE_L ? "L" : "R");
+            lv_obj_set_style_text_color(tag, C(T.accent), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_font(tag, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+            row.lat = lv_label_create(p);
+            lv_label_set_text(row.lat, "");
+            lv_obj_set_style_text_color(row.lat, C(T.fg), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_font(row.lat, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+            row.lon = lv_label_create(p);
+            lv_label_set_text(row.lon, "");
+            lv_obj_set_style_text_color(row.lon, C(T.fg), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_font(row.lon, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+            row.empty = lv_label_create(p);
+            lv_label_set_text(row.empty, "-- not set --");
+            lv_obj_set_style_text_color(row.empty, C(T.muted), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_font(row.empty, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+            lv_obj_t *btn = lv_button_create(p);
+            lv_obj_set_width(btn, 64);
+            lv_obj_set_height(btn, 24);
+            lv_obj_set_ext_click_area(btn, 5);
+            lv_obj_remove_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_set_style_radius(btn, 3, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_color(btn, C(T.surface2), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_opa(btn, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_border_color(btn, C(T.rule), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_border_opa(btn, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_border_width(btn, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_color(btn, C(T.accent), LV_PART_MAIN | LV_STATE_PRESSED);
+            lv_obj_set_style_bg_opa(btn, 255, LV_PART_MAIN | LV_STATE_PRESSED);
+            lv_obj_add_event_cb(btn, gate_pin_cb, LV_EVENT_CLICKED,
+                                (void *)(intptr_t)((g << 1) | s));
+
+            row.pin_lbl = lv_label_create(btn);
+            lv_label_set_text(row.pin_lbl, "PIN");
+            lv_obj_center(row.pin_lbl);
+            lv_obj_set_style_text_color(row.pin_lbl, C(T.fg), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_letter_space(row.pin_lbl, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_font(row.pin_lbl, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+            gate_make_editable(row.lat,   g, s, 1);
+            gate_make_editable(row.lon,   g, s, 0);
+            gate_make_editable(row.empty, g, s, 1);   /* same as the L/R rows */
+
+            row.c = { 0, 0, false };
+            refresh_sector_row(g, (setup_line_side_t)s);
+        }
+    }
+}
+
+void UiHelper::refresh_sector_row(int gate, setup_line_side_t side) {
+    if (gate < 0 || gate > 1) return;
+    GateRow &row = s_gate[gate][side];
+    if (!row.lat) return;
+
+    if (row.c.valid) {
+        char buf[24];
+        snprintf(buf, sizeof(buf), "LAT %.4f%c", fabs(row.c.lat), row.c.lat >= 0 ? 'N' : 'S');
+        lv_label_set_text(row.lat, buf);
+        snprintf(buf, sizeof(buf), "LON %.4f%c", fabs(row.c.lon), row.c.lon >= 0 ? 'E' : 'W');
+        lv_label_set_text(row.lon, buf);
+        lv_obj_remove_flag(row.lat, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(row.lon, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(row.empty, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(row.pin_lbl, "RESET");
+    } else {
+        lv_obj_add_flag(row.lat, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(row.lon, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(row.empty, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(row.pin_lbl, "PIN");
+    }
+}
+
+void UiHelper::setSectorCoord(int gate, setup_line_side_t side,
+                              double lat, double lon, bool valid) {
+    if (gate < 0 || gate > 1) return;
+    s_gate[gate][side].c = { lat, lon, valid };
+    refresh_sector_row(gate, side);
+}
+
+/* ============================================================================
  * TRACK SETUP
  * ============================================================================ */
 
@@ -411,6 +660,7 @@ void UiHelper::setTrackIdx(int idx) {
 
 void UiHelper::setStartL(double lat, double lon, bool valid) {
     s_line_l.lat = lat; s_line_l.lon = lon; s_line_l.valid = valid;
+    build_sector_rows();
     refresh_coord_row(SETUP_LINE_L);
 }
 
@@ -430,6 +680,9 @@ void UiHelper::setDirty(bool dirty) {
  * ============================================================================ */
 void UiHelper::setTheme(dash_mode_t mode) {
     T = (mode == DASH_MODE_DAY) ? THEME_DAY : THEME_NIGHT;
+
+    /* ----- Dashboard (v2 owns its own tokens) ----- */
+    ui_dash2_set_mode(mode == DASH_MODE_DAY ? DASH2_MODE_DAY : DASH2_MODE_NIGHT);
 
     /* ----- Runtime-built cells (GoPro, WiFi portal) ----- */
     refresh_camera();
@@ -559,23 +812,96 @@ void UiHelper::setTheme(dash_mode_t mode) {
 /* ============================================================================
  * SESSION STATE
  * ============================================================================ */
+/* ============================================================================
+ * RECORDING INDICATOR
+ * The v2 design has no recording affordance, but knowing at a glance whether
+ * the session is actually logging matters more mid-race than anything else on
+ * the screen. It lives in the status bar rather than on the dashboard so it is
+ * visible from the config, track and sessions screens too — you can wander
+ * into a menu mid-session and still see that you are recording.
+ * ============================================================================ */
+extern "C" void ui_helper_stop_session(void);   /* implemented in main_display */
+
+static void rec_cell_cb(lv_event_t *e) {
+    /* Same behaviour the old dashboard panel had: tap it to stop. */
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) ui_helper_stop_session();
+}
+
+void UiHelper::build_rec_cell(void) {
+    if (!ui_panelstatus || s_rec_panel) return;
+
+    s_rec_panel = lv_obj_create(ui_panelstatus);
+    lv_obj_set_width (s_rec_panel, LV_SIZE_CONTENT);
+    lv_obj_set_height(s_rec_panel, LV_SIZE_CONTENT);
+    lv_obj_set_align (s_rec_panel, LV_ALIGN_CENTER);
+    lv_obj_set_flex_flow(s_rec_panel, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_rec_panel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(s_rec_panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(s_rec_panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(s_rec_panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(s_rec_panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(s_rec_panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_column(s_rec_panel, 5, LV_PART_MAIN | LV_STATE_DEFAULT);
+    /* Generous hit area — this gets pressed with gloves on. */
+    lv_obj_set_ext_click_area(s_rec_panel, 8);
+    lv_obj_add_flag(s_rec_panel, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_rec_panel, rec_cell_cb, LV_EVENT_CLICKED, NULL);
+
+    s_rec_dot = lv_obj_create(s_rec_panel);
+    lv_obj_remove_style_all(s_rec_dot);
+    lv_obj_set_size(s_rec_dot, 10, 10);
+    lv_obj_set_style_radius(s_rec_dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_opa(s_rec_dot, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(s_rec_dot, C(T.bad), 0);
+
+    s_rec_lbl = lv_label_create(s_rec_panel);
+    lv_label_set_text(s_rec_lbl, "REC");
+    lv_obj_set_style_text_letter_space(s_rec_lbl, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(s_rec_lbl, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(s_rec_lbl, C(T.bad), LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    /* Leftmost, so it is the first thing in the eye's path across the bar. */
+    lv_obj_move_to_index(s_rec_panel, 0);
+    lv_obj_add_flag(s_rec_panel, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void rec_blink_cb(void *obj, int32_t v) {
+    lv_obj_set_style_opa((lv_obj_t *)obj, (lv_opa_t)v, 0);
+}
+
 void UiHelper::setSessionState(bool active) {
     if (ui_labelstartsession)
         lv_label_set_text(ui_labelstartsession, active ? "STOP SESSION" : "START SESSION");
 
-    if (ui_panelrecording) {
-        if (active)
-            lv_obj_remove_flag(ui_panelrecording, LV_OBJ_FLAG_HIDDEN);
-        else
-            lv_obj_add_flag(ui_panelrecording, LV_OBJ_FLAG_HIDDEN);
+    if (!s_rec_panel) return;
+    if (active == s_rec_active) return;
+    s_rec_active = active;
+
+    if (active) {
+        lv_obj_remove_flag(s_rec_panel, LV_OBJ_FLAG_HIDDEN);
+        /* Blink via LVGL's animator rather than repainting from loop(): in this
+         * backend every style write costs a full-frame QSPI blit, and the old
+         * per-frame tick was doing that twice a second forever. */
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, s_rec_dot);
+        lv_anim_set_exec_cb(&a, rec_blink_cb);
+        lv_anim_set_values(&a, LV_OPA_COVER, LV_OPA_20);
+        lv_anim_set_duration(&a, 450);
+        lv_anim_set_playback_duration(&a, 450);
+        lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+        lv_anim_start(&a);
+    } else {
+        lv_anim_delete(s_rec_dot, rec_blink_cb);
+        lv_obj_set_style_opa(s_rec_dot, LV_OPA_COVER, 0);
+        lv_obj_add_flag(s_rec_panel, LV_OBJ_FLAG_HIDDEN);
     }
 }
 
-void UiHelper::tickRecordingPanel() {
-    if (!ui_panelrecording || lv_obj_has_flag(ui_panelrecording, LV_OBJ_FLAG_HIDDEN)) return;
-    uint32_t c = (millis() / 500) % 2 ? T.bad : T.bad_deep;
-    lv_obj_set_style_bg_color(ui_panelrecording, C(c), LV_PART_MAIN);
-}
+/* Kept so the call site in loop() needs no #ifdef. The blink is an LVGL
+ * animation now, so there is nothing to tick. */
+void UiHelper::tickRecordingPanel() {}
 
 /* ============================================================================
  * STATUS BAR SETTERS
@@ -655,6 +981,9 @@ extern "C" void ui_helper_set_dirty(bool d)    { if (s_instance) s_instance->set
 
 extern "C" void ui_helper_set_start_l(double lat, double lon, bool valid) {
     if (s_instance) s_instance->setStartL(lat, lon, valid);
+}
+extern "C" void ui_helper_set_sector_coord(int gate, int side, double lat, double lon, bool valid) {
+    if (s_instance) s_instance->setSectorCoord(gate, (setup_line_side_t)side, lat, lon, valid);
 }
 extern "C" void ui_helper_set_start_r(double lat, double lon, bool valid) {
     if (s_instance) s_instance->setStartR(lat, lon, valid);
