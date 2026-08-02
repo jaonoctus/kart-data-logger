@@ -14,10 +14,17 @@ ifdef VERBOSE
 CXXFLAGS += -DREPLAY_VERBOSE=1
 endif
 
+all: replay sectors
+
 replay: replay.cpp $(ROOT)/lib/LapManager/LapManager.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
+# Same harness with split gates, for validating sector timing against a
+# circuit's official sheet.
+sectors: sectors.cpp $(ROOT)/lib/LapManager/LapManager.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
 clean:
-	rm -f replay
+	rm -f replay sectors
 
 .PHONY: clean
