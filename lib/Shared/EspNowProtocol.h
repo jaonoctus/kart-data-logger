@@ -34,6 +34,18 @@ struct __attribute__((packed)) TelemetryMsg {
     uint8_t hasFix;
     uint64_t timestamp;
     float steeringAngle;  // Steering wheel angle in degrees
+
+    /* Receiver-reported fix quality. Appended at the end deliberately: the CSV column
+     * order follows this struct, and every consumer (tools/overlay, tools/lapreplay)
+     * reads either by column name or by a fixed sscanf prefix, so appending is
+     * invisible to them and a log from a GoPro simply lacks these columns.
+     *
+     * Zero across all four means the provider could not report them — the ATGM336 has
+     * no equivalent in NMEA. See GpsFixInfo in IGpsProvider.h. */
+    uint8_t fixType;      // 0 none, 2 = 2D, 3 = 3D, 5 = time only
+    float pdop;
+    float hAccM;          // horizontal accuracy estimate, metres
+    float sAccMps;        // speed accuracy estimate, m/s
 };
 
 static_assert(sizeof(float) == 4, "Telemetry protocol requires 4-byte float");
