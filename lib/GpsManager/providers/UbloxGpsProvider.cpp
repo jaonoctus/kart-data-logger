@@ -3,99 +3,103 @@
 #include <math.h>
 #include <time.h>
 
+namespace {
+// UBX is little-endian throughout.
+inline uint16_t rdU2(const uint8_t *p) { return (uint16_t)p[0] | ((uint16_t)p[1] << 8); }
+inline uint32_t rdU4(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+inline int32_t rdI4(const uint8_t *p) { return (int32_t)rdU4(p); }
+}
+
 UbloxGpsProvider::UbloxGpsProvider(int8_t rxPin, int8_t txPin)
     : _rxPin(rxPin), _txPin(txPin), _serialGps(1) {}
 
 uint64_t UbloxGpsProvider::getEpochMs() {
-    if (!_gps.date.isValid() || !_gps.time.isValid()) {
-        return millis();
-    }
-
-    struct tm t;
-    t.tm_year = _gps.date.year() - 1900;
-    t.tm_mon = _gps.date.month() - 1;
-    t.tm_mday = _gps.date.day();
-    t.tm_hour = _gps.time.hour();
-    t.tm_min = _gps.time.minute();
-    t.tm_sec = _gps.time.second();
-    t.tm_isdst = 0;
-
-    uint64_t epochSeconds = (uint64_t)mktime(&t);
-    return (epochSeconds * 1000ULL) + (_gps.time.centisecond() * 10ULL);
+    // millis() as the fallback matches what the NMEA path did, and LogManager already
+    // rejects anything before 2021 when deciding whether to sync the system clock.
+    return _timeValid ? _epochMs : millis();
 }
 
 bool UbloxGpsProvider::begin() {
-    bool foundBaud = false;
+    // 115200 first (where we leave the module), then 38400 — the u-blox M9 default,
+    // and what the Matek M9N-5883 ships at. The 9600 of the NEO-6M era is gone;
+    // this provider targets M9 (NEO-M9N) and nothing older.
+    static const uint32_t kProbeBauds[] = { 115200, 38400 };
+    uint32_t foundBaud = 0;
 
-    log_i("Testing u-blox connection at 115200 baud...");
-
-    _serialGps.setRxBufferSize(1024);
-    _serialGps.begin(115200, SERIAL_8N1, _rxPin, _txPin);
-
-    uint32_t startCheck = millis();
-    while (millis() - startCheck < 1500) {
-        if (_serialGps.available() > 0 && _serialGps.read() == '$') {
-            foundBaud = true;
-            log_i("u-blox module detected at 115200 baud.");
-            break;
-        }
-    }
-
-    if (!foundBaud) {
-        log_i("No response at 115200. Trying 9600...");
+    for (uint32_t baud : kProbeBauds) {
+        log_i("Testing u-blox connection at %u baud...", baud);
         _serialGps.end();
-
         _serialGps.setRxBufferSize(1024);
-        _serialGps.begin(9600, SERIAL_8N1, _rxPin, _txPin);
+        _serialGps.begin(baud, SERIAL_8N1, _rxPin, _txPin);
 
-        startCheck = millis();
+        /* Accept either sync byte. '$' is an NMEA sentence, which is what a factory
+         * module sends; 0xB5 is the first byte of a UBX frame, which is all it sends
+         * once configureUblox() has run and saved to flash. Probing only for '$'
+         * would find nothing on the second boot and declare the module missing. */
+        uint32_t startCheck = millis();
         while (millis() - startCheck < 1500) {
-            if (_serialGps.available() > 0 && _serialGps.read() == '$') {
-                foundBaud = true;
-                log_i("u-blox module detected at 9600 baud. Upgrading to 115200...");
-
-                const uint8_t setBaud115200[] = {
-                    0x01,                   // Port ID (UART1)
-                    0x00,                   // Reserved
-                    0x00, 0x00,             // Reserved
-                    0xD0, 0x08, 0x00, 0x00, // UART mode (8N1)
-                    0x00, 0xC2, 0x01, 0x00, // Baud rate (115200)
-                    0x03, 0x00,             // InProtoMask (UBX+NMEA)
-                    0x03, 0x00,             // OutProtoMask (UBX+NMEA)
-                    0x00, 0x00,             // Reserved
-                    0x00, 0x00              // Reserved
-                };
-                sendUBXWithChecksum(0x06, 0x00, (uint8_t*)setBaud115200, sizeof(setBaud115200));
-                _serialGps.flush();
-                delay(200);
-
-                _serialGps.end();
-                _serialGps.setRxBufferSize(1024);
-                _serialGps.begin(115200, SERIAL_8N1, _rxPin, _txPin);
-                break;
+            if (_serialGps.available() > 0) {
+                uint8_t b = _serialGps.read();
+                if (b == '$' || b == 0xB5) {
+                    foundBaud = baud;
+                    break;
+                }
             }
         }
+        if (foundBaud) break;
     }
 
     if (!foundBaud) {
-        LOG_ERROR("Error: u-blox module not responding at 115200 or 9600 baud.");
+        LOG_ERROR("Error: u-blox module not responding at 115200 or 38400 baud.");
         return false;
+    }
+    log_i("u-blox module detected at %u baud.", foundBaud);
+
+    if (foundBaud != 115200) {
+        // GGA+RMC at 10Hz would fit in 38400, but 115200 is free and leaves room to
+        // raise the rate (25Hz is ~36kbaud) without another round trip through here.
+        log_i("Upgrading u-blox port to 115200...");
+
+        const uint8_t setBaud115200[] = {
+            0x01,                   // Port ID (UART1)
+            0x00,                   // Reserved
+            0x00, 0x00,             // Reserved
+            0xD0, 0x08, 0x00, 0x00, // UART mode (8N1)
+            0x00, 0xC2, 0x01, 0x00, // Baud rate (115200)
+            0x03, 0x00,             // InProtoMask (UBX+NMEA)
+            0x03, 0x00,             // OutProtoMask (UBX+NMEA)
+            0x00, 0x00,             // Reserved
+            0x00, 0x00              // Reserved
+        };
+        sendUBXWithChecksum(0x06, 0x00, (uint8_t*)setBaud115200, sizeof(setBaud115200));
+        _serialGps.flush();
+        delay(200);
+
+        _serialGps.end();
+        _serialGps.setRxBufferSize(1024);
+        _serialGps.begin(115200, SERIAL_8N1, _rxPin, _txPin);
     }
 
     log_i("u-blox serial communication established.");
 
+    /* log_i, not log_d: the build runs at CORE_DEBUG_LEVEL=INFO (see platformio.ini —
+     * DEBUG makes the dash boot dark over USB), so log_d compiles to nothing. These
+     * three lines are the only evidence that anything we send actually reaches the
+     * module, and they fire once at boot rather than per fix. */
     UBXConfig initial = readCurrentConfig();
-    log_d("u-blox BEFORE: Model: %d | Rate: %dms | PerfMode: %d", initial.dynModel, initial.measRate, initial.perfMode);
+    log_i("u-blox BEFORE: Model: %d | Rate: %dms | PerfMode: %d", initial.dynModel, initial.measRate, initial.perfMode);
 
     if (initial.dynModel != 4 || initial.measRate != kUpdateIntervalMs || initial.perfMode != 0) {
-        log_d("u-blox config is not ideal for kart. Applying adjustments...");
+        log_i("u-blox config is not ideal for kart. Applying adjustments...");
         configureUblox();
 
         delay(200);
-        UBXConfig final = readCurrentConfig();
-        log_d("u-blox AFTER:  Model: %d | Rate: %dms | PerfMode: %d", final.dynModel, final.measRate, final.perfMode);
+        UBXConfig applied = readCurrentConfig();
+        log_i("u-blox AFTER:  Model: %d | Rate: %dms | PerfMode: %d", applied.dynModel, applied.measRate, applied.perfMode);
     } else {
-        log_d("u-blox configuration already optimized for kart.");
+        log_i("u-blox configuration already optimized for kart.");
     }
 
     return true;
@@ -105,42 +109,111 @@ void UbloxGpsProvider::end() {
     _serialGps.end();
 }
 
+/* Software backup mode via UBX-RXM-PMREQ. This is an actual power-down of the
+ * receiver core, not the ATGM336's "talk less and hope" — the whole reason charge
+ * mode is worth anything on this module.
+ *
+ * duration 0 means indefinite, so the only way out is a wakeup source. We arm
+ * uartrx, since the ESP32's TX to the module is already wired and the UART is
+ * deliberately left open by enterChargeMode() for exactly this.
+ *
+ * What survives: the port settings, rate, dynamic model and message set, because
+ * configureUblox() ends with a CFG-CFG save to flash. What does not necessarily
+ * survive is the BBR ephemeris — whether it does depends on V_BCKP on the module,
+ * which we cannot see from here. So wake() may come back to a hot start (~2s) or a
+ * cold one (~30s). Either is correct; only the first fix is slower.
+ *
+ * Not called on the way into a session, only from charge mode. */
+void UbloxGpsProvider::standby() {
+    const uint8_t pmreq[] = {
+        0x00,                   // version
+        0x00, 0x00, 0x00,       // reserved1
+        0x00, 0x00, 0x00, 0x00, // duration: 0 = until a wakeup source fires
+        0x06, 0x00, 0x00, 0x00, // flags: backup (bit 1) | force (bit 2)
+        0x08, 0x00, 0x00, 0x00  // wakeupSources: uartrx (bit 3)
+    };
+    sendUBXWithChecksum(0x02, 0x41, (uint8_t*)pmreq, sizeof(pmreq));
+    _serialGps.flush();
+    log_i("u-blox: software backup requested (UBX-RXM-PMREQ).");
+}
+
+void UbloxGpsProvider::wake() {
+    /* Any traffic on the module's RX pin ends backup. The first bytes are eaten
+     * waking the core rather than parsed, so this is deliberately junk and
+     * deliberately more than one — 0xFF cannot begin a UBX frame or an NMEA
+     * sentence, so a byte that does land in the parser is discarded rather than
+     * mistaken for a command. */
+    for (uint8_t i = 0; i < 8; i++) _serialGps.write(0xFF);
+    _serialGps.flush();
+
+    /* No reconfiguration to do here, unlike the ATGM336: the settings went to flash
+     * in configureUblox(), so the receiver comes back up already correct. Only the
+     * fix takes a moment. */
+    log_i("u-blox: woken from software backup; waiting on the first fix.");
+}
+
 void UbloxGpsProvider::configureUblox() {
-    // CFG-RATE: 5Hz (200ms)
-    const uint8_t set5Hz[] = {
-        (uint8_t)(kUpdateIntervalMs & 0xFF), (uint8_t)((kUpdateIntervalMs >> 8) & 0xFF),// Measurement Rate (200ms = 5Hz)
+    // CFG-RATE — see kUpdateIntervalMs for why it is what it is.
+    const uint8_t setRate[] = {
+        (uint8_t)(kUpdateIntervalMs & 0xFF), (uint8_t)((kUpdateIntervalMs >> 8) & 0xFF), // Measurement Rate
         0x01, 0x00, // Navigation Rate (1 = output every measurement)
         0x01, 0x00, // Time Reference (1 = GPS time)
     };
-    sendUBXWithChecksum(0x06, 0x08, (uint8_t*)set5Hz, sizeof(set5Hz));
+    sendUBXWithChecksum(0x06, 0x08, (uint8_t*)setRate, sizeof(setRate));
     delay(100);
 
-    // CFG-NAV5: Dynamic Model = Automotive (Optimized for accelerations and turns)
+    /* CFG-NAV5: dynamic model = automotive. There is no kart model; automotive is the
+     * closest fit and tunes the receiver's motion assumptions for road-vehicle
+     * dynamics (its stated envelope is 100 m/s horizontal, 15 m/s vertical, 6000m
+     * altitude — comfortably around a kart).
+     *
+     * The mask is 0xFFFF, i.e. apply EVERY field below, not just dynModel. That is
+     * why the values that follow matter even where they look incidental. */
     const uint8_t setAutomotive[] = {
-        0xFF, 0xFF,             // Mask (DYN + FixMode)
-        0x04,                   // Dynamic Model: 4 = Automotive
-        0x03,                   // Fix Mode: 3 = Auto 2D/3D
-        0x03, 0x20, 0x00, 0x00, // Fixed Altitude 800m (for 2D fix)
-        0x45, 0x64, 0x00, 0x01, // Fixed Altitude Variance (8.33m^2)
-        0x05,                   // Min Elevation (leave as is)
-        0x00,                   // Dead Reckoning Limit (leave as is)
-        0xFA, 0x00,             // Position DOP Mask (leave as is)
-        0xFA, 0x00,             // Time DOP Mask (leave as is)
-        0x64, 0x00,             // Position Accuracy Mask (leave as is)
-        0x2C, 0x01,             // Time Accuracy Mask (leave as is)
-        0x00,                   // static hold threshold (leave as is)
-        0x3C,                   // DGPS Timeout (leave as is)
-        0x00, 0x00, 0x00, 0x00, // Reserved (set to 0)
-        0x00, 0x00, 0x00, 0x00, // Reserved (set to 0)
-        0x00, 0x00, 0x00, 0x00  // Reserved (set to 0)
+        0xFF, 0xFF,             // mask: all fields
+        0x04,                   // dynModel  4 = automotive
+        0x03,                   // fixMode   3 = auto 2D/3D
+        /* fixedAlt / fixedAltVar, scaled 0.01m and 0.0001m^2 — so these are 81.95m
+         * and 1680.34m^2, NOT the 800m and 8.33m^2 an earlier comment here claimed.
+         * Both only apply to a 2D fix, which hasFix() now rejects outright, so they
+         * are dead values kept only because the mask above writes the whole struct. */
+        0x03, 0x20, 0x00, 0x00,
+        0x45, 0x64, 0x00, 0x01,
+        /* Everything below was commented "leave as is", which the 0xFFFF mask makes
+         * untrue — every field here is written. They happen to equal the u-blox
+         * defaults, which is why nothing broke: minElev 5deg, pDop/tDop 25.0,
+         * pAcc 100m, tAcc 300m, staticHoldThresh 0, dgnssTimeout 60s. */
+        0x05,                   // minElev, degrees
+        0x00,                   // drLimit, seconds
+        0xFA, 0x00,             // pDop,  0.1  -> 25.0
+        0xFA, 0x00,             // tDop,  0.1  -> 25.0
+        0x64, 0x00,             // pAcc,  metres -> 100
+        0x2C, 0x01,             // tAcc,  metres -> 300
+        0x00,                   // staticHoldThresh, cm/s
+        0x3C,                   // dgnssTimeout, seconds
+        /* cnoThreshNumSVs, cnoThresh, reserved1, staticHoldMaxDist, utcStandard
+         * (0 = automatic) and reserved2. All zero, all matching the defaults. */
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00
     };
     sendUBXWithChecksum(0x06, 0x24, (uint8_t*)setAutomotive, sizeof(setAutomotive));
     delay(100);
 
-    // CFG-MSG: Disable Message to free bandwidth
-    uint8_t killList[] = { 
+    /* CFG-MSG: every NMEA sentence off, UBX-NAV-PVT on. NAV-PVT alone carries
+     * everything the dash and the log want — position, Doppler ground speed, UTC,
+     * numSV, fixType, pDOP, hAcc, sAcc — in one frame per epoch, so there is no
+     * reason to keep a second, wordier copy of a subset of it on the wire.
+     *
+     * Turning GGA and RMC off is also what makes the four-constellation question go
+     * away entirely: the per-system duplication that made GSA and GSV expensive was
+     * an NMEA problem, and NAV-PVT has no talker IDs to multiply. */
+    uint8_t nmeaKillList[] = {
+        0x00, // GGA
         0x01, // GLL
+        0x02, // GSA
         0x03, // GSV
+        0x04, // RMC
         0x05, // VTG
         0x08, // ZDA
         0x0A, // DTM
@@ -150,18 +223,16 @@ void UbloxGpsProvider::configureUblox() {
         0x41  // TXT
     };
 
-    for (uint8_t id : killList) {
-        uint8_t payload[3] = { 0xF0, id, 0x00 }; // Class 0xF0, ID, Rate 0
+    for (uint8_t id : nmeaKillList) {
+        uint8_t payload[3] = { 0xF0, id, 0x00 }; // Class 0xF0 (NMEA), ID, Rate 0
         sendUBXWithChecksum(0x06, 0x01, payload, 3);
         delay(100);
     }
 
-    uint8_t keepList[] = { 0x00, 0x02, 0x04 }; // GGA, GSA, RMC
-    for (uint8_t id : keepList) {
-        uint8_t payload[3] = { 0xF0, id, 0x01 }; // Class 0xF0, ID, Rate 1
-        sendUBXWithChecksum(0x06, 0x01, payload, 3);
-        delay(100);
-    }
+    // Class 0x01 (NAV), ID 0x07 (PVT), one per navigation solution.
+    uint8_t enablePvt[3] = { 0x01, 0x07, 0x01 };
+    sendUBXWithChecksum(0x06, 0x01, enablePvt, 3);
+    delay(100);
 
     const uint8_t setMaxPerf[] = {
         0x08,
@@ -227,7 +298,9 @@ bool UbloxGpsProvider::pollUBX(uint8_t msgClass, uint8_t msgID, uint8_t* payload
         else if (pos == 2 && b == msgClass) pos++;
         else if (pos == 3 && b == msgID) pos++;
         else if (pos >= 4) {
-            if (pos - 6 < payloadLen) {
+            // pos 4/5 are the length bytes; the payload starts at pos 6. Without
+            // the pos >= 6 guard these two write payload[-2] and payload[-1].
+            if (pos >= 6 && (pos - 6) < payloadLen) {
                 payload[pos - 6] = b;
             }
             pos++;
@@ -260,21 +333,116 @@ UBXConfig UbloxGpsProvider::readCurrentConfig() {
     return cfg;
 }
 
+/* Byte-at-a-time UBX reader. Returns true once a NAV-PVT frame has been received
+ * whole and its checksum verified, which is what the main loop treats as "there is a
+ * new fix". A bad checksum drops the frame silently rather than feeding a corrupt
+ * position into lap timing; the counter exists so a wiring or baud problem shows up
+ * as something other than a dash that simply never updates. */
 bool UbloxGpsProvider::update() {
     bool newData = false;
+
     while (_serialGps.available() > 0) {
-        if (_gps.encode(_serialGps.read())) {
-            newData = true;
+        uint8_t b = _serialGps.read();
+
+        switch (_rxState) {
+        case 0: // waiting for sync char 1
+            if (b == 0xB5) _rxState = 1;
+            break;
+        case 1: // sync char 2
+            _rxState = (b == 0x62) ? 2 : 0;
+            break;
+        case 2: // class — the checksum covers everything from here to the payload end
+            _rxClass = b; _ckA = b; _ckB = b;
+            _rxState = 3;
+            break;
+        case 3: // id
+            _rxId = b; _ckA += b; _ckB += _ckA;
+            _rxState = 4;
+            break;
+        case 4: // length low
+            _rxLen = b; _ckA += b; _ckB += _ckA;
+            _rxState = 5;
+            break;
+        case 5: // length high
+            _rxLen |= (uint16_t)b << 8; _ckA += b; _ckB += _ckA;
+            _rxPos = 0;
+            if (_rxLen > kRxBufSize) _rxState = 0;   // not ours; resync
+            else if (_rxLen == 0)    _rxState = 7;
+            else                     _rxState = 6;
+            break;
+        case 6: // payload
+            _rxBuf[_rxPos++] = b; _ckA += b; _ckB += _ckA;
+            if (_rxPos >= _rxLen) _rxState = 7;
+            break;
+        case 7: // checksum A
+            _rxCkA = b;
+            _rxState = 8;
+            break;
+        case 8: // checksum B
+            if (_rxCkA == _ckA && b == _ckB) {
+                if (_rxClass == 0x01 && _rxId == 0x07 && _rxLen >= 92) {
+                    applyNavPvt(_rxBuf);
+                    newData = true;
+                }
+            } else if ((++_checksumErrors % 64) == 1) {
+                /* Rate-limited: a baud or wiring fault produces these by the
+                 * thousand, and the point is to be visible without shredding the
+                 * serial log the way an unfiltered warning at 25Hz would. */
+                log_w("u-blox: %lu UBX checksum failures", (unsigned long)_checksumErrors);
+            }
+            _rxState = 0;
+            break;
         }
     }
+
     return newData;
 }
 
-double UbloxGpsProvider::getLat() { return _gps.location.lat(); }
-double UbloxGpsProvider::getLng() { return _gps.location.lng(); }
+/* UBX-NAV-PVT, version 0, 92 bytes. Offsets are from the interface description and
+ * are the reason this reads as a pile of magic numbers — the alternative is a packed
+ * struct, which needs the compiler to agree about padding on a field layout that
+ * mixes U1/U2/U4 at unaligned offsets. Explicit offsets cannot be quietly wrong. */
+void UbloxGpsProvider::applyNavPvt(const uint8_t *p) {
+    _fixType   = p[20];
+    _gnssFixOK = (p[21] & 0x01) != 0;
+    _numSV     = p[23];
+    _lng       = rdI4(p + 24) * 1e-7;   // 1e-7 degrees == ~1.1cm, no NMEA rounding
+    _lat       = rdI4(p + 28) * 1e-7;
+    _hAccM     = rdU4(p + 40) / 1000.0f;
+    _gSpeedKmh = rdI4(p + 60) * 0.0036; // mm/s -> km/h; Doppler, not position delta
+    _sAccMps   = rdU4(p + 68) / 1000.0f;
+    _pdop      = rdU2(p + 76) * 0.01f;
+
+    // valid: bit0 validDate, bit1 validTime, bit2 fullyResolved.
+    if ((p[11] & 0x03) == 0x03) {
+        struct tm t = {};
+        t.tm_year  = rdU2(p + 4) - 1900;
+        t.tm_mon   = p[6] - 1;
+        t.tm_mday  = p[7];
+        t.tm_hour  = p[8];
+        t.tm_min   = p[9];
+        t.tm_sec   = p[10];
+        t.tm_isdst = 0;
+
+        /* nano is signed and can run slightly negative, so this is computed in int64
+         * before it becomes an unsigned epoch — the same sum in uint64 would wrap. */
+        int64_t ms = (int64_t)mktime(&t) * 1000LL + (int64_t)rdI4(p + 16) / 1000000LL;
+        if (ms > 0) {
+            _epochMs   = (uint64_t)ms;
+            _timeValid = true;
+        }
+    }
+}
+
+double UbloxGpsProvider::getLat() { return _lat; }
+double UbloxGpsProvider::getLng() { return _lng; }
+
+GpsFixInfo UbloxGpsProvider::getFixInfo() const {
+    return { _fixType, _gnssFixOK, _pdop, _hAccM, _sAccMps };
+}
 
 double UbloxGpsProvider::getSpeed(float gForce, float gyroZ) {
-    double raw = _gps.speed.kmph();
+    double raw = _gSpeedKmh;
 
     if (!hasFix()) {
         return 0.0;
@@ -312,15 +480,20 @@ double UbloxGpsProvider::getSpeed(float gForce, float gyroZ) {
     return round(_speedFiltered * 10.0) / 10.0;
 }
 
-uint32_t UbloxGpsProvider::getSatellites() { return _gps.satellites.value(); }
+uint32_t UbloxGpsProvider::getSatellites() { return _numSV; }
 
+/* The receiver's own verdict, which is better information than the sats >= 4 and
+ * HDOP <= 3 heuristic this replaces: gnssFixOK is the flag the receiver sets when it
+ * considers the solution usable under its own DOP and accuracy masks, and hAcc is its
+ * error estimate rather than a proxy for one.
+ *
+ * fixType 3 (3D) is required. A 2D fix means the receiver could not resolve altitude,
+ * which on an open kart track means the solution is struggling, and its horizontal
+ * component is not worth timing a lap with. */
 bool UbloxGpsProvider::hasFix() {
-    const double maxHdop = 3.0;
-    const uint32_t minSats = 4;
-
-    if (!_gps.location.isValid()) return false;
-    if ((int)_gps.satellites.value() < minSats) return false;
-    if (_gps.hdop.isValid() && _gps.hdop.hdop() > maxHdop) return false;
+    if (!_gnssFixOK) return false;
+    if (_fixType != 3) return false;
+    if (_hAccM <= 0.0f || _hAccM > kMaxHAccM) return false;
 
     return true;
 }

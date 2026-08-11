@@ -8,6 +8,16 @@ track.
 Nothing here is part of the firmware build. `tools/` is outside `build_src_filter`
 and `lib/`, so PlatformIO never sees it.
 
+`make` also builds **`navpvt`**, an offset-level check on the real
+`UbloxGpsProvider::update()` — it feeds synthetic `UBX-NAV-PVT` frames through a
+byte-queue serial stub and asserts what the provider decodes. Run it after touching
+that provider: it decodes by explicit byte offset, and a wrong offset does not crash,
+it produces plausible telemetry that is silently wrong. It covers the field offsets,
+the `hasFix()` gates (2D rejected, `hAcc` bound), checksum rejection, mm/s→km/h
+scaling, and a frame split at every byte boundary — that last one being the real 25Hz
+failure mode, where a message straddles two `update()` calls because the UART buffer
+drained mid-frame.
+
 ## Why a GoPro
 
 GoPro MP4s carry a GPMF metadata track alongside the video. On a HERO8 that is

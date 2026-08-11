@@ -2,3 +2,4 @@ replay
 *.csv
 __pycache__/
 sectors
+navpvt

@@ -26,6 +26,7 @@ public:
     uint32_t getSatellites();
     uint64_t getEpochMs();
     bool hasFix();
+    GpsFixInfo getFixInfo() const;
     uint16_t getUpdateIntervalMs() const;
 
 private:

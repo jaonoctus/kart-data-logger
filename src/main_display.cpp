@@ -289,9 +289,14 @@ void syncUI() {
         uiHelper.setGx(telemetry.gForceX);
         uiHelper.setGy(telemetry.gForceY);
 
-        // 2. Push to SD Log Queue — only when a session is active to avoid stale data
+        // 2. Push to SD Log Queue — only when a session is active to avoid stale data.
+        // Zero timeout: the UI must never block on the card. A full queue therefore
+        // drops the row silently, which at 25Hz is exactly the failure the fix rate
+        // was bought to avoid, so count it and let the health report say so.
         if (LogManager::logQueue != NULL && logManager.isSessionActive()) {
-            xQueueSend(LogManager::logQueue, &telemetry, 0);
+            if (xQueueSend(LogManager::logQueue, &telemetry, 0) != pdTRUE) {
+                logManager.noteDroppedFrame();
+            }
         }
 
         uiHelper.setSpeed(telemetry.speedKmph);
@@ -637,6 +642,13 @@ void loop() {
         telemetry.sats        = (uint8_t)gps.getSatellites();
         telemetry.hasFix      = gps.hasFix() ? 1 : 0;
         telemetry.timestamp   = gps.getEpochMs();
+
+        // Fix quality, zeroed on providers that cannot report it (the ATGM336).
+        GpsFixInfo fix        = gps.getFixInfo();
+        telemetry.fixType     = fix.fixType;
+        telemetry.pdop        = fix.pdop;
+        telemetry.hAccM       = fix.hAccM;
+        telemetry.sAccMps     = fix.sAccMps;
         newTelemetryAvailable = true;
     }
 
@@ -665,6 +677,17 @@ void loop() {
                   (unsigned long)drops, (unsigned long)(drops - lastFrameDrops),
                   (unsigned long)stallUs);
             lastFrameDrops = drops;
+        }
+
+        // Log rows the queue had no room for. Also persisted to /health.csv by the
+        // log task, since serial is no use with the dash bolted to a steering wheel.
+        static uint32_t lastLogQueueDrops = 0;
+        uint32_t logDrops = logManager.droppedFrames();
+        if (logDrops != lastLogQueueDrops) {
+            log_w("[LOG] queue_drops=%lu (+%lu) — the card is not keeping up",
+                  (unsigned long)logDrops,
+                  (unsigned long)(logDrops - lastLogQueueDrops));
+            lastLogQueueDrops = logDrops;
         }
 
 #if defined(ENABLE_IMU)

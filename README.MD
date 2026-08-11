@@ -16,7 +16,7 @@ Single target: the **Display Dashboard Node**.
 * **Board:** JC3248W535N (ESP32-S3, AXS15231B QSPI panel)
 * **Role:** GPS acquisition, lap detection, UI dashboard, and SD logging.
 * **Features:**
-  * GPS from ATGM336 (default) or u-blox, wired directly to the board.
+  * GPS from ATGM336 (default) or u-blox M9, wired directly to the board.
   * Live speed, G-force, satellite count and display battery state.
   * Finish-line based lap detection with best/previous lap deltas.
   * Telemetry logged to SD card per recording session.
@@ -60,10 +60,14 @@ While parked: tap anywhere to wake the backlight and read the battery for
 another 15s; press `RESUME` to leave. Resuming re-probes the GPS, which takes a
 couple of seconds.
 
-> **The GPS module keeps running.** `gps.end()` only closes the ESP32's UART —
-> the ATGM336 has no power gating on this board, so it continues drawing
-> ~25-40 mA. Cutting it needs a `$PCAS12` standby command or a load switch on
-> its VCC, neither of which is wired yet.
+> **Whether the GPS actually sleeps depends on which one is fitted.** Charge mode
+> calls `gps.standby()` and leaves the UART open so `wake()` can talk to it.
+> On the **ATGM336** that is a quiesce, not a sleep: the RF front end has no
+> software power-down at all, so it keeps drawing ~25-40 mA and standby only cuts
+> it to GPS-only at 1Hz with NMEA muted. On the **u-blox M9** it is a real
+> power-down — `UBX-RXM-PMREQ` software backup, woken by traffic on the module's
+> RX pin. Coming back may cost a cold start if the module's V_BCKP does not hold
+> the BBR, but the configuration itself is in flash and survives either way.
 
 > **The percentage reads high while charging.** With no power-path charger the
 > sense divider sits on the charger rail, so it measures the cell terminal
@@ -78,7 +82,9 @@ re-exporting `lib/ui/` will not wipe them.
 ## Hardware Requirements
 
 * JC3248W535N display board
-* GPS module (ATGM336 or u-blox) wired to `RX=6` / `TX=7`
+* GPS module wired to `RX=6` / `TX=7` — ATGM336, or a u-blox M9 such as the Matek
+  M9N-5883. The ATGM336 runs on 3V3; the M9N-5883 wants 4~5.5V, so its VCC belongs
+  on the IP5306 5V rail, not the board's 3V3.
 * Optional MPU6050 IMU
 * microSD card formatted FAT32
 
@@ -93,17 +99,65 @@ Built with PlatformIO.
 
 ## GPS Providers
 
-`GpsManager` supports two providers.
+`GpsManager` supports two providers. Nothing older than these is supported — the
+NEO-6M-era 9600-baud fallback is gone.
 
 * **ATGM336 provider** (current default)
   * Enabled with `-D GPS_PROVIDER_ATGM336`.
-  * Update interval: `100ms` (10Hz).
-* **u-blox provider**
+  * 10Hz.
+  * Configured over CASIC text commands (`$PCAS`), which are never acked, so the
+    module cannot report whether a setting took. It also cannot be put to sleep:
+    `$PCAS12` standby is a 5L-only feature and this is a 5N.
+* **u-blox M9 provider** — targets the M9 generation (NEO-M9N), e.g. the Matek
+  M9N-5883.
   * Leave `-D GPS_PROVIDER_ATGM336` out of the build flags.
-  * Update interval: `200ms` (5Hz).
+  * 25Hz.
+  * Probes 115200 then 38400 (the M9 default), and moves the port to 115200.
+  * Sleeps for real in charge mode — `UBX-RXM-PMREQ` software backup, armed to
+    wake on UART RX traffic.
+  * Configured over binary UBX, which *is* acked, and the provider reads the
+    dynamic model / rate / power mode back at boot and logs `BEFORE:` and
+    `AFTER:` lines. Legacy `UBX-CFG-*` messages are deprecated on generation 9
+    but still supported; they are removed on generation 10, so a future module
+    means porting `configureUblox()` to `UBX-CFG-VALSET`.
+  * **Speaks `UBX-NAV-PVT`, not NMEA.** All NMEA output is disabled. One 92-byte
+    frame per epoch carries position at 1e-7° (~1.1cm), Doppler ground speed,
+    UTC, `numSV`, `fixType`, `pDOP`, `hAcc` and `sAcc` — less traffic than
+    GGA+RMC and strictly more information, as one coherent snapshot instead of a
+    position from one sentence stitched to a speed from another. It also makes the
+    four-constellation problem vanish: per-system duplication of GSA/GSV was an
+    NMEA artefact, and UBX has no talker IDs to multiply.
+  * `hasFix()` therefore uses the receiver's own verdict — `gnssFixOK`,
+    `fixType == 3`, and `hAcc` within bounds — rather than the `sats >= 4 &&
+    HDOP <= 3` heuristic the NMEA path had to guess with.
+  * **TinyGPSPlus is unused on this path.** It stays in `lib_deps` for the
+    ATGM336, and static-archive linking drops it (and the unreferenced provider)
+    from the image. It is still compiled every build, so a break in either
+    provider still fails the build.
 
 The flag lives in `[display_common] -> build_flags_base`, so it applies to both
 build targets at once.
+
+### Fix rate
+
+ATGM336 runs at **10Hz**, u-blox M9 at **25Hz** — the receiver's ceiling with all
+four constellations. GGA+RMC at 25Hz is ~36kbaud of the 115200 the port is set to,
+so the link has room to spare. 40ms epochs also land on exact centisecond values
+(`.00`/`.04`/`.08`…), which matters because NMEA timestamps are centiseconds and
+anything finer would round.
+
+The rate buys **log resolution**, which is the point — at 100 km/h, 25Hz puts a
+sample every 1.1m instead of every 2.8m. It buys much less for lap times, because
+`LapManager` intersects the finish gate with the segment between consecutive fixes
+and interpolates the crossing millisecond along it, so the reported time never
+quantised to the fix interval in the first place.
+
+To sustain 25Hz, `LogManager` holds the log file open for the whole session and
+`flush()`es once a second, rather than reopening and closing it per row (25 FAT
+directory updates a second is where a slow card starts stalling). The trade is
+durability: an abrupt power-off now costs up to a second of the lap instead of a
+single sample. The telemetry queue is 40 frames for the same reason — ~1.6s of
+headroom at 25Hz, so a card stall doesn't drop rows.
 
 ### GPS wiring
 
@@ -129,6 +183,23 @@ Stores display preferences. Created with defaults on first boot if absent.
 theme=dark          # dark | light
 selected_track=0    # index into tracks.ini
 ```
+
+#### `/health.csv` (auto-created, only when something goes wrong)
+
+Appended across every session, one row per second in which the telemetry queue
+had no room for a frame:
+
+```
+epoch,log,dropped_total,dropped_delta
+```
+
+**An empty or absent file is the good news** — it means no row was ever lost. Any
+row in it means the card could not keep up with the fix rate and the matching
+`log_N.csv` is missing samples, so the file is worth checking after a race rather
+than watching the serial log, which is unreachable with the dash on a wheel.
+
+`epoch` comes from the GPS-synced system clock, so it lines up with the `epoch`
+column in the telemetry file; before the first fix it degrades to uptime.
 
 #### `/tracks.ini` (optional, user-created)
 
@@ -159,8 +230,30 @@ Telemetry session logs. A new numbered file is created each time a recording
 session starts.
 
 ```
-epoch,speed,totalGForce,gForceX,gForceY,steering_angle,sats,lat,lng
+epoch,speed,totalGForce,gForceX,gForceY,steering_angle,sats,lat,lng,fix,pdop,hacc,sacc
 ```
+
+The last four are the receiver's report on its own fix, and are **zero on the
+ATGM336** — NMEA carries no equivalent, so zero means "not reported", not "perfect".
+
+| column | meaning |
+| --- | --- |
+| `fix`  | `0` no fix, `2` 2D, `3` 3D, `5` time only. Never `1`/`4` (dead reckoning) — that is NEO-M9V silicon, not M9N. |
+| `pdop` | position dilution of precision |
+| `hacc` | horizontal accuracy estimate, metres, ~1σ |
+| `sacc` | speed accuracy estimate, m/s |
+
+`hacc` is the useful one for analysis: it does not make a position better, it tells
+you which samples to distrust. Around 0.7-1.5m under open sky, climbing near
+buildings and in the first seconds after a cold start. A lap time interpolated
+between two 12m samples is not a lap time to trust to hundredths.
+
+These columns are **appended**, never inserted, so everything in `tools/` keeps
+working — those read by column name or by a fixed `sscanf` prefix. A CSV derived
+from GoPro footage simply lacks them.
+
+Note `lat`/`lng` are written at 7 decimal places (~1.1cm) rather than 6 (~11cm),
+which is what `UBX-NAV-PVT` actually resolves.
 
 ## Setup & Installation
 

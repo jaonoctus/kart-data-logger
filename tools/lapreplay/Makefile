@@ -14,7 +14,7 @@ ifdef VERBOSE
 CXXFLAGS += -DREPLAY_VERBOSE=1
 endif
 
-all: replay sectors
+all: replay sectors navpvt
 
 replay: replay.cpp $(ROOT)/lib/LapManager/LapManager.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
@@ -24,7 +24,12 @@ replay: replay.cpp $(ROOT)/lib/LapManager/LapManager.cpp
 sectors: sectors.cpp $(ROOT)/lib/LapManager/LapManager.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
+# Offset-level check on the real UBX-NAV-PVT reader. Run it after touching
+# UbloxGpsProvider — a wrong byte offset produces plausible telemetry, not a crash.
+navpvt: navpvt.cpp $(ROOT)/lib/GpsManager/providers/UbloxGpsProvider.cpp
+	$(CXX) $(CXXFLAGS) -I$(ROOT)/lib/GpsManager/providers -o $@ $^
+
 clean:
-	rm -f replay sectors
+	rm -f replay sectors navpvt
 
 .PHONY: clean
