@@ -98,6 +98,7 @@ private:
                                        lv_obj_t **out_label);
     static void build_charge_screen(void);             /* hand-built; not a SquareLine export */
     static void build_charge_mode_button(void);        /* injected into the config screen at runtime */
+    static void build_version_label(void);             /* ditto — FW_VERSION in the setup header */
     static void refresh_track_name(void);
     static void refresh_coord_row(setup_line_side_t side);
     static void refresh_dirty(void);

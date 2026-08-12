@@ -138,8 +138,42 @@ void UiHelper::init() {
     // SquareLine, so re-exporting lib/ui/ does not wipe them.
     build_charge_screen();
     build_charge_mode_button();
+    build_version_label();
 
     bsp_display_unlock();
+}
+
+/* Normally injected by platformio.ini from `git describe`. Guarded so the file still
+ * compiles if something builds it without the flag. */
+#ifndef FW_VERSION
+#define FW_VERSION "unknown"
+#endif
+
+/* Firmware version, right-aligned in the setup screen's header bar.
+ *
+ * The header is the only free space on that screen: ui_panelsetupbuttons is y=66
+ * h=254 on a 320px panel, so it reaches the bottom edge exactly and there is no
+ * footer to put this in. The header is not a flex container and its two existing
+ * children sit at LEFT_MID (back) and CENTER (title), leaving RIGHT_MID empty.
+ *
+ * Barlow22 rather than one of the larger faces: the 60/52/200 exports are
+ * digits-only subsets (cmap 46..58), and a commit hash is mostly letters — every
+ * one would render as a missing-glyph box. 22 and 32 carry full ASCII 32..126.
+ *
+ * Built here for the same reason as the charge-mode button: a re-export of lib/ui/
+ * from SquareLine cannot wipe it. */
+void UiHelper::build_version_label(void) {
+    if (!ui_panelsetup) return;
+
+    lv_obj_t *lbl = lv_label_create(ui_panelsetup);
+    lv_obj_set_width(lbl, LV_SIZE_CONTENT);
+    lv_obj_set_height(lbl, LV_SIZE_CONTENT);
+    lv_obj_set_align(lbl, LV_ALIGN_RIGHT_MID);
+    lv_label_set_text(lbl, FW_VERSION);
+    // Muted grey: it should be readable when looked for and ignorable otherwise.
+    lv_obj_set_style_text_color(lbl, C(0x6B7280), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_opa(lbl, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(lbl, &ui_font_BarlowCondensedBold22, LV_PART_MAIN | LV_STATE_DEFAULT);
 }
 
 /* ============================================================================
