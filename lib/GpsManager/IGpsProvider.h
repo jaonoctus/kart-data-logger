@@ -45,6 +45,10 @@ public:
     virtual bool hasFix() = 0;
     virtual GpsFixInfo getFixInfo() const { return {}; }
 
+    /* Frames accepted since boot. Lets the caller measure the rate actually
+     * delivered rather than trusting the rate we asked for. */
+    virtual uint32_t getFrameCount() const { return 0; }
+
     virtual uint16_t getUpdateIntervalMs() const = 0;
 };
 

@@ -30,4 +30,5 @@ uint32_t GpsManager::getSatellites() { return _provider->getSatellites(); }
 uint64_t GpsManager::getEpochMs() { return _provider->getEpochMs(); }
 bool GpsManager::hasFix() { return _provider->hasFix(); }
 GpsFixInfo GpsManager::getFixInfo() const { return _provider->getFixInfo(); }
+uint32_t GpsManager::getFrameCount() const { return _provider->getFrameCount(); }
 uint16_t GpsManager::getUpdateIntervalMs() const { return _provider->getUpdateIntervalMs(); }
