@@ -85,7 +85,11 @@ public:
 
     void setDirty(bool dirty);
 
+    /* Dashboard alert banner. Hidden at zero; tapping it opens the log screen. */
+    void setAlert(uint16_t errors, uint16_t warnings);
+
 private:
+    static void build_alert_banner(void);
     static uint32_t batt_color(uint8_t pct);
     static uint32_t gps_color(uint8_t n);
     static void build_camera_cell(void);

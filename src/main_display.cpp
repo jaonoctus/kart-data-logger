@@ -27,12 +27,21 @@ extern "C" {
 #endif
 
 #include "SessionBrowser.h"
+#include "LogBuffer.h"
+#include "LogScreen.h"
 
 // Opens the on-device session review screens. Called from the config screen,
 // already in LVGL context — the browser loads a placeholder and repaints before
 // the (slow) SD read, so the press feels immediate.
 extern "C" void ui_helper_open_sessions(void) {
     sessionBrowser.openList();
+}
+
+// Opens the log screen. Reached from the config screen and from the dashboard
+// alert banner. Renders out of LogBuffer's RAM ring, so unlike the session
+// browser there is no slow read to defer — it can run in LVGL context.
+extern "C" void ui_helper_open_logs(void) {
+    logScreen.open();
 }
 
 #if defined(ENABLE_IMU)
@@ -377,6 +386,12 @@ void setup() {
 #endif
     Serial.setDebugOutput(true);
 
+    // FIRST: everything logged from here on is captured for the log screen and,
+    // once the card mounts, written to /dash.log. Installed before the boot
+    // banner so a GPS or SD failure at the track has an account on the device
+    // rather than only on a USB port nothing is attached to.
+    logBuffer.begin();
+
     log_i("--- KART DISPLAY BOOTING ---");
 
     // Report whether this boot is a normal start or an auto-recovery from a
@@ -597,6 +612,10 @@ void loop() {
     // lock would block this task and trip the watchdog.
     sessionBrowser.service();
 
+    // Flush captured log lines to SD. Here for the same reason as the line
+    // above: it touches the card, and must not run under the display lock.
+    logBuffer.service();
+
 #if defined(ENABLE_IMU)
     if (imuReady) {
         float currentSteering = calibManager.getSteeringAngle();
@@ -636,6 +655,18 @@ void loop() {
         telemetry.pdop        = fix.pdop;
         telemetry.hAccM       = fix.hAccM;
         telemetry.sAccMps     = fix.sAccMps;
+
+        /* Enqueue HERE, once per frame. This used to live in syncUI() behind the
+         * newTelemetryAvailable flag, which is a one-slot handoff: whatever
+         * arrived between UI passes was overwritten and never reached the queue.
+         * Zero timeout still, so a full queue drops the row rather than blocking
+         * the UI — but now that is a real drop the health counter can see. */
+        if (LogManager::logQueue != NULL && logManager.isSessionActive()) {
+            if (xQueueSend(LogManager::logQueue, &telemetry, 0) != pdTRUE) {
+                logManager.noteDroppedFrame();
+            }
+        }
+
         newTelemetryAvailable = true;
     }
 
@@ -646,6 +677,32 @@ void loop() {
         lastDisplayBattReadMs = now;
         cachedDisplayBattPct = (uint8_t)displayBattery.getPercentage();
         log_i("Display battery: %d%%", cachedDisplayBattPct);
+    }
+
+    /* GPS heartbeat. "GPS 0" on the dash says a fix is missing but not why, and
+     * the difference matters: satellites climbing with fixType stuck at 0 is a
+     * sky-view/cold-start problem and will come good if left alone; zero
+     * satellites for minutes is an antenna, wiring or config problem and never
+     * will. Logged unconditionally so a session that never got a fix leaves an
+     * account of itself on the card. */
+    static uint32_t lastGpsLogMs   = 0;
+    static uint32_t lastGpsFrames  = 0;
+    if (now - lastGpsLogMs >= 5000) {
+        /* Measured NAV-PVT rate, not the rate we asked for. CFG-RATE is accepted
+         * without complaint even when the receiver cannot sustain it, so the only
+         * way to know we are really getting 25Hz is to count frames and divide. */
+        uint32_t frames  = gps.getFrameCount();
+        uint32_t elapsed = now - lastGpsLogMs;
+        float    hz      = lastGpsLogMs && elapsed
+                             ? (frames - lastGpsFrames) * 1000.0f / (float)elapsed
+                             : 0.0f;
+        lastGpsLogMs  = now;
+        lastGpsFrames = frames;
+
+        GpsFixInfo fi = gps.getFixInfo();
+        log_i("GPS: sats=%lu fix=%u ok=%d pdop=%.1f hAcc=%.1fm rate=%.1fHz",
+              (unsigned long)gps.getSatellites(), (unsigned)fi.fixType,
+              fi.gnssFixOK ? 1 : 0, fi.pdop, fi.hAccM, hz);
     }
 
     // Once-a-second health reporting
@@ -736,6 +793,10 @@ void loop() {
         lastDisplayBattPct = cachedDisplayBattPct;
         uiHelper.setDisplay(cachedDisplayBattPct);
     }
+
+    // Alert banner. setAlert() early-outs when the counts are unchanged-and-zero,
+    // so this is cheap enough to run every pass.
+    uiHelper.setAlert(logBuffer.errorCount(), logBuffer.warningCount());
 
 #if defined(ENABLE_WEB_PORTAL)
     // Client count is the only thing that changes while the portal is up, and

@@ -207,9 +207,20 @@ extern "C" lv_display_t *bsp_display_start_with_config(const bsp_display_cfg_t *
         Serial.println("[DisplayGFX] draw buffer alloc failed");
         return nullptr;
     }
-    log_w("[GFX] draw bufs: b1=%s b2=%s (%u bytes each)",
-          esp_ptr_internal(b1) ? "internal" : "psram",
-          esp_ptr_internal(b2) ? "internal" : "psram", (unsigned)buf_bytes);
+    /* Both internal is the intended outcome, so it is log_i — warning on the
+     * healthy path just trains you to ignore the alert banner. A buffer that
+     * fell back to PSRAM is the real event: LVGL renders into these every frame
+     * and PSRAM is markedly slower, so it earns a warning. */
+    const bool b1_int = esp_ptr_internal(b1);
+    const bool b2_int = esp_ptr_internal(b2);
+    if (b1_int && b2_int) {
+        log_i("[GFX] draw bufs: both internal (%u bytes each)", (unsigned)buf_bytes);
+    } else {
+        log_w("[GFX] draw bufs FELL BACK TO PSRAM: b1=%s b2=%s (%u bytes each) — "
+              "internal DRAM exhausted, expect slower rendering",
+              b1_int ? "internal" : "psram",
+              b2_int ? "internal" : "psram", (unsigned)buf_bytes);
+    }
     lv_display_set_buffers(s_disp, b1, b2, buf_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
 
     // 6. Touch input device.

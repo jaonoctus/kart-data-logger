@@ -139,6 +139,7 @@ void UiHelper::init() {
     build_charge_screen();
     build_charge_mode_button();
     build_version_label();
+    build_alert_banner();
 
     bsp_display_unlock();
 }
@@ -503,12 +504,16 @@ void UiHelper::setCamera(bool linked, bool recording, uint8_t battPct, bool gpsL
  * ============================================================================ */
 extern "C" void ui_helper_toggle_wifi(void);   /* implemented in main_display */
 extern "C" void ui_helper_open_sessions(void); /* implemented in main_display */
+extern "C" void ui_helper_open_logs(void);     /* implemented in main_display */
 
 static void wifi_btn_cb(lv_event_t *e) {
     if (lv_event_get_code(e) == LV_EVENT_CLICKED) ui_helper_toggle_wifi();
 }
 static void sessions_btn_cb(lv_event_t *e) {
     if (lv_event_get_code(e) == LV_EVENT_CLICKED) ui_helper_open_sessions();
+}
+static void logs_btn_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) ui_helper_open_logs();
 }
 
 void UiHelper::build_wifi_cell(void) {
@@ -590,8 +595,66 @@ void UiHelper::build_wifi_button(void) {
     /* SESSIONS sits above the portal button — reviewing a run is the more
      * common reason to come here than moving files off the card. */
     make_setup_button("SESSIONS", sessions_btn_cb, nullptr);
+    make_setup_button("SYSTEM LOG", logs_btn_cb, nullptr);
     make_setup_button("WIFI PORTAL: OFF", wifi_btn_cb, &s_wifi_btn_lbl);
     refresh_wifi();
+}
+
+/* ============================================================================
+ * ALERT BANNER — dashboard overlay, tap to open the log
+ * Injected onto ui_dashboardscreen after the dash2 swap, so it is the last
+ * child and paints above the dashboard. Hidden unless something has actually
+ * gone wrong: a banner that is always there stops being read.
+ * Bottom edge, because speed and lap times own the top of this screen.
+ * ============================================================================ */
+static lv_obj_t *s_alert     = nullptr;
+static lv_obj_t *s_alert_lbl = nullptr;
+
+void UiHelper::build_alert_banner(void) {
+    if (!ui_dashboardscreen || s_alert) return;
+
+    s_alert = lv_obj_create(ui_dashboardscreen);
+    lv_obj_set_size(s_alert, LV_PCT(94), 32);
+    lv_obj_align(s_alert, LV_ALIGN_BOTTOM_MID, 0, -4);
+    lv_obj_remove_flag(s_alert, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(s_alert, 3, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(s_alert, C(T.bad_deep), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(s_alert, 235, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(s_alert, C(T.bad), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(s_alert, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_opa(s_alert, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(s_alert, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    lv_obj_add_flag(s_alert, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_alert, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(s_alert, 10);
+    lv_obj_add_event_cb(s_alert, logs_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    s_alert_lbl = lv_label_create(s_alert);
+    lv_obj_center(s_alert_lbl);
+    lv_label_set_text(s_alert_lbl, "");
+    lv_obj_set_style_text_color(s_alert_lbl, C(T.fg), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(s_alert_lbl, &lv_font_montserrat_16, LV_PART_MAIN | LV_STATE_DEFAULT);
+}
+
+void UiHelper::setAlert(uint16_t errors, uint16_t warnings) {
+    if (!s_alert) return;
+
+    if (errors == 0 && warnings == 0) {
+        lv_obj_add_flag(s_alert, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    /* Errors dominate the text when present — a warning count next to a real
+     * failure buries the thing that matters. */
+    if (errors) lv_label_set_text_fmt(s_alert_lbl, "%u ERROR%s  -  TAP FOR LOG",
+                                      (unsigned)errors, errors == 1 ? "" : "S");
+    else        lv_label_set_text_fmt(s_alert_lbl, "%u WARNING%s  -  TAP FOR LOG",
+                                      (unsigned)warnings, warnings == 1 ? "" : "S");
+
+    lv_obj_set_style_border_color(s_alert, C(errors ? T.bad : T.accent),
+                                  LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_remove_flag(s_alert, LV_OBJ_FLAG_HIDDEN);
 }
 
 void UiHelper::refresh_wifi(void) {
