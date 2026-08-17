@@ -280,24 +280,12 @@ void syncUI() {
     if (newTelemetryAvailable) {
         newTelemetryAvailable = false;
 
-        // Inject current steering angle before logging/processing
-#if defined(ENABLE_IMU)
-        if (imuReady) {
-            telemetry.steeringAngle = calibManager.getSteeringAngle();
-        }
-#endif
         uiHelper.setGx(telemetry.gForceX);
         uiHelper.setGy(telemetry.gForceY);
 
-        // 2. Push to SD Log Queue — only when a session is active to avoid stale data.
-        // Zero timeout: the UI must never block on the card. A full queue therefore
-        // drops the row silently, which at 25Hz is exactly the failure the fix rate
-        // was bought to avoid, so count it and let the health report say so.
-        if (LogManager::logQueue != NULL && logManager.isSessionActive()) {
-            if (xQueueSend(LogManager::logQueue, &telemetry, 0) != pdTRUE) {
-                logManager.noteDroppedFrame();
-            }
-        }
+        /* The log enqueue used to live here. It now happens per-frame in loop(),
+         * where every NAV-PVT is seen — this path only runs once per UI pass and
+         * so could never carry more than one frame of the 25. */
 
         uiHelper.setSpeed(telemetry.speedKmph);
 
@@ -620,23 +608,22 @@ void loop() {
     }
 #endif
 
-    // Poll the local GPS and assemble the telemetry frame consumed by syncUI().
-    if (gps.update()) {
-        float imuG = 0.0f, imuGyroZ = 0.0f, imuGx = 0.0f, imuGy = 0.0f;
-#if defined(ENABLE_IMU)
-        if (imuReady) {
-            imuG     = latestImuData.gForce;
-            imuGyroZ = latestImuData.gyroZ;
-            imuGx    = latestImuData.accelX;
-            imuGy    = latestImuData.accelY;
-        }
-#endif
+    /* Drain EVERY NAV-PVT frame, not one per pass. update() yields a single
+     * frame per call now, so this loop logs all 25 per second even when a slow
+     * LVGL or SD pass makes loop() itself run at 19Hz — which is exactly how a
+     * measured session lost 24% of its rows without the health counter noticing,
+     * the frames being discarded upstream of the queue. The UI still consumes
+     * only the newest via newTelemetryAvailable; only the log needs all of them. */
+    while (gps.update()) {
+        /* IMU removed — no accelerometer on this build. The g-force and gyro
+         * fields stay in the message (and the CSV) as zeros so old sessions and
+         * SessionBrowser keep parsing; a future 9-DoF refills them. */
         telemetry.type        = MSG_TELEMETRY;
-        telemetry.speedKmph   = (float)gps.getSpeed(imuG, imuGyroZ);
-        telemetry.gForceX     = imuGx;
-        telemetry.gForceY     = imuGy;
-        telemetry.totalGForce = imuG;
-        telemetry.gyroZ       = imuGyroZ;
+        telemetry.speedKmph   = (float)gps.getSpeed(0.0f, 0.0f);
+        telemetry.gForceX     = 0.0f;
+        telemetry.gForceY     = 0.0f;
+        telemetry.totalGForce = 0.0f;
+        telemetry.gyroZ       = 0.0f;
         telemetry.lat         = gps.getLat();
         telemetry.lng         = gps.getLng();
         telemetry.sats        = (uint8_t)gps.getSatellites();
@@ -668,6 +655,18 @@ void loop() {
         // QSPI flush health: report dropped frames and the worst bus-idle wait in
         // the last second, then reset the stall high-water mark. A blink should line
         // up with either a frame_drops increment (hard skip) or a high max_stall.
+
+        /* Enqueue HERE, once per frame. This used to live in syncUI() behind the
+         * newTelemetryAvailable flag, which is a one-slot handoff: whatever
+         * arrived between UI passes was overwritten and never reached the queue.
+         * Zero timeout still, so a full queue drops the row rather than blocking
+         * the UI — but now that is a real drop the health counter can see. */
+        if (LogManager::logQueue != NULL && logManager.isSessionActive()) {
+            if (xQueueSend(LogManager::logQueue, &telemetry, 0) != pdTRUE) {
+                logManager.noteDroppedFrame();
+            }
+        }
+
         static uint32_t lastFrameDrops = 0;
         uint32_t drops = lvgl_port_frame_drops;
         uint32_t stallUs = lvgl_port_max_stall_us;
@@ -680,6 +679,32 @@ void loop() {
         }
 
         // Log rows the queue had no room for. Also persisted to /health.csv by the
+    /* GPS heartbeat. "GPS 0" on the dash says a fix is missing but not why, and
+     * the difference matters: satellites climbing with fixType stuck at 0 is a
+     * sky-view/cold-start problem and will come good if left alone; zero
+     * satellites for minutes is an antenna, wiring or config problem and never
+     * will. Logged unconditionally so a session that never got a fix leaves an
+     * account of itself on the card. */
+    static uint32_t lastGpsLogMs   = 0;
+    static uint32_t lastGpsFrames  = 0;
+    if (now - lastGpsLogMs >= 5000) {
+        /* Measured NAV-PVT rate, not the rate we asked for. CFG-RATE is accepted
+         * without complaint even when the receiver cannot sustain it, so the only
+         * way to know we are really getting 25Hz is to count frames and divide. */
+        uint32_t frames  = gps.getFrameCount();
+        uint32_t elapsed = now - lastGpsLogMs;
+        float    hz      = lastGpsLogMs && elapsed
+                             ? (frames - lastGpsFrames) * 1000.0f / (float)elapsed
+                             : 0.0f;
+        lastGpsLogMs  = now;
+        lastGpsFrames = frames;
+
+        GpsFixInfo fi = gps.getFixInfo();
+        log_i("GPS: sats=%lu fix=%u ok=%d pdop=%.1f hAcc=%.1fm rate=%.1fHz",
+              (unsigned long)gps.getSatellites(), (unsigned)fi.fixType,
+              fi.gnssFixOK ? 1 : 0, fi.pdop, fi.hAccM, hz);
+    }
+
         // log task, since serial is no use with the dash bolted to a steering wheel.
         static uint32_t lastLogQueueDrops = 0;
         uint32_t logDrops = logManager.droppedFrames();

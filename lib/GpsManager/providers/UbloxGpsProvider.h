@@ -47,6 +47,7 @@ public:
     uint32_t getSatellites() override;
     uint64_t getEpochMs() override;
     bool hasFix() override;
+    uint32_t getFrameCount() const override { return _pvtFrames; }
     GpsFixInfo getFixInfo() const override;
     uint16_t getUpdateIntervalMs() const override;
 
@@ -56,6 +57,13 @@ private:
     HardwareSerial _serialGps;
 
     void sendUBXWithChecksum(uint8_t msgClass, uint8_t msgID, uint8_t* payload, uint16_t len);
+
+    /* Every UBX-CFG message is answered with ACK-ACK or ACK-NAK. sendUBXWithChecksum
+     * ignores that reply, so a setting the receiver REJECTS has always looked
+     * exactly like one it accepted. sendCfg() sends and then reports the verdict. */
+    bool awaitAck(uint8_t msgClass, uint8_t msgID, uint32_t timeoutMs);
+    void sendCfg(uint8_t msgClass, uint8_t msgID, uint8_t* payload, uint16_t len,
+                 const char* what);
     void configureUblox();
     UBXConfig readCurrentConfig();
     bool pollUBX(uint8_t msgClass, uint8_t msgID, uint8_t* payload, uint8_t payloadLen);
@@ -73,6 +81,12 @@ private:
     uint8_t _ckA = 0, _ckB = 0, _rxCkA = 0;
     uint8_t _rxBuf[kRxBufSize];
     uint32_t _checksumErrors = 0;
+
+    /* NAV-PVT frames accepted since boot. The configured rate is what we asked
+     * for; this is what the receiver actually delivers, and the two are not the
+     * same thing — an M9N cannot sustain 25Hz across four constellations, and it
+     * does not refuse the request, it just runs slower. */
+    uint32_t _pvtFrames = 0;
 
     // Latest NAV-PVT, in the units the rest of the system wants.
     double   _lat = 0.0;

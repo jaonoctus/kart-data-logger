@@ -25,7 +25,9 @@ bool UbloxGpsProvider::begin() {
     // 115200 first (where we leave the module), then 38400 — the u-blox M9 default,
     // and what the Matek M9N-5883 ships at. The 9600 of the NEO-6M era is gone;
     // this provider targets M9 (NEO-M9N) and nothing older.
-    static const uint32_t kProbeBauds[] = { 115200, 38400 };
+    // ponytail: 9600/57600 are here for bring-up only — a factory M9 is 38400 and we
+    // leave it at 115200. Trim back to {115200, 38400} once the wiring is trusted.
+    static const uint32_t kProbeBauds[] = { 115200, 38400, 9600, 57600 };
     uint32_t foundBaud = 0;
 
     for (uint32_t baud : kProbeBauds) {
@@ -38,24 +40,50 @@ bool UbloxGpsProvider::begin() {
          * module sends; 0xB5 is the first byte of a UBX frame, which is all it sends
          * once configureUblox() has run and saved to flash. Probing only for '$'
          * would find nothing on the second boot and declare the module missing. */
+        /* Count every byte, not just the sync ones. Discarding non-matching bytes
+         * makes "module is mute" and "module talks at some other baud" produce the
+         * identical "not responding" error, which is the difference between a
+         * wiring fault and a config fault. */
+        uint32_t seen = 0;
+        uint8_t first[8];
         uint32_t startCheck = millis();
         while (millis() - startCheck < 1500) {
             if (_serialGps.available() > 0) {
                 uint8_t b = _serialGps.read();
+                if (seen < sizeof(first)) first[seen] = b;
+                seen++;
                 if (b == '$' || b == 0xB5) {
                     foundBaud = baud;
                     break;
                 }
             }
         }
+        /* Nothing to report when the baud works — "detected at N baud" below
+         * already says so, and a warning on a healthy boot trains you to ignore
+         * the alert banner. Only a baud that FAILED is worth a line. */
         if (foundBaud) break;
+
+        if (seen == 0) {
+            log_w("  %u baud: 0 bytes — line is silent", baud);
+        } else {
+            char hex[3 * sizeof(first) + 1] = {0};
+            uint32_t n = seen < sizeof(first) ? seen : sizeof(first);
+            for (uint32_t i = 0; i < n; i++) sprintf(hex + 3 * i, "%02X ", first[i]);
+            log_w("  %u baud: %u bytes, first: %s", baud, seen, hex);
+        }
     }
 
     if (!foundBaud) {
-        LOG_ERROR("Error: u-blox module not responding at 115200 or 38400 baud.");
+        LOG_ERROR("Error: u-blox module not responding at any probed baud.");
         return false;
     }
     log_i("u-blox module detected at %u baud.", foundBaud);
+
+    /* No setRxBufferSize() here: it is only honoured BEFORE begin(), and calling
+     * it on an open port logs an error every boot. The 1024 set in the probe
+     * loop above is ~11 NAV-PVT frames (~440ms at 25Hz) and measured sufficient —
+     * a 293s session logged 7329 rows with every gap exactly 40ms. If loop() ever
+     * gets slow enough to overflow it, raise the value at the begin() sites. */
 
     if (foundBaud != 115200) {
         // GGA+RMC at 10Hz would fit in 38400, but 115200 is free and leaves room to
@@ -159,8 +187,7 @@ void UbloxGpsProvider::configureUblox() {
         0x01, 0x00, // Navigation Rate (1 = output every measurement)
         0x01, 0x00, // Time Reference (1 = GPS time)
     };
-    sendUBXWithChecksum(0x06, 0x08, (uint8_t*)setRate, sizeof(setRate));
-    delay(100);
+    sendCfg(0x06, 0x08, (uint8_t*)setRate, sizeof(setRate), "CFG-RATE");
 
     /* CFG-NAV5: dynamic model = automotive. There is no kart model; automotive is the
      * closest fit and tunes the receiver's motion assumptions for road-vehicle
@@ -197,8 +224,7 @@ void UbloxGpsProvider::configureUblox() {
         0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00
     };
-    sendUBXWithChecksum(0x06, 0x24, (uint8_t*)setAutomotive, sizeof(setAutomotive));
-    delay(100);
+    sendCfg(0x06, 0x24, (uint8_t*)setAutomotive, sizeof(setAutomotive), "CFG-NAV5 automotive");
 
     /* CFG-MSG: every NMEA sentence off, UBX-NAV-PVT on. NAV-PVT alone carries
      * everything the dash and the log want — position, Doppler ground speed, UTC,
@@ -231,14 +257,13 @@ void UbloxGpsProvider::configureUblox() {
 
     // Class 0x01 (NAV), ID 0x07 (PVT), one per navigation solution.
     uint8_t enablePvt[3] = { 0x01, 0x07, 0x01 };
-    sendUBXWithChecksum(0x06, 0x01, enablePvt, 3);
-    delay(100);
+    sendCfg(0x06, 0x01, enablePvt, 3, "CFG-MSG NAV-PVT on");
 
     const uint8_t setMaxPerf[] = {
         0x08,
         0x00,
     };
-    sendUBXWithChecksum(0x06, 0x11, (uint8_t*)setMaxPerf, sizeof(setMaxPerf));
+    sendCfg(0x06, 0x11, (uint8_t*)setMaxPerf, sizeof(setMaxPerf), "CFG-RXM max performance");
 
     const uint8_t saveConfigAll[] = {
         0x00, 0x00, 0x00, 0x00,
@@ -246,7 +271,48 @@ void UbloxGpsProvider::configureUblox() {
         0x00, 0x00, 0x00, 0x00,
         0x17,
     };
-    sendUBXWithChecksum(0x06, 0x09, (uint8_t*)saveConfigAll, sizeof(saveConfigAll));
+    sendCfg(0x06, 0x09, (uint8_t*)saveConfigAll, sizeof(saveConfigAll), "CFG-CFG save to flash");
+}
+
+/* Walks the byte stream for an ACK-ACK (0x05/0x01) or ACK-NAK (0x05/0x00) whose
+ * 2-byte payload names the class/id we just sent. Other frames — NAV-PVT included
+ * — are skipped by the state machine rather than buffered. */
+bool UbloxGpsProvider::awaitAck(uint8_t msgClass, uint8_t msgID, uint32_t timeoutMs) {
+    uint32_t deadline = millis() + timeoutMs;
+    uint8_t state = 0, ackType = 0, cls = 0;
+
+    while ((int32_t)(deadline - millis()) > 0) {
+        if (!_serialGps.available()) { delay(1); continue; }
+        uint8_t b = _serialGps.read();
+
+        switch (state) {
+            case 0: state = (b == 0xB5) ? 1 : 0; break;
+            case 1: state = (b == 0x62) ? 2 : 0; break;
+            case 2: state = (b == 0x05) ? 3 : 0; break;   /* class ACK */
+            case 3: ackType = b; state = 4;      break;   /* 0x01 ACK / 0x00 NAK */
+            case 4: state = (b == 0x02) ? 5 : 0; break;   /* length lo = 2 */
+            case 5: state = (b == 0x00) ? 6 : 0; break;   /* length hi = 0 */
+            case 6: cls = b; state = 7;          break;
+            case 7:
+                state = 0;
+                if (cls == msgClass && b == msgID) return ackType == 0x01;
+                break;
+        }
+    }
+    return false;   /* timeout — reported by the caller, which knows the name */
+}
+
+void UbloxGpsProvider::sendCfg(uint8_t msgClass, uint8_t msgID, uint8_t* payload,
+                               uint16_t len, const char* what) {
+    sendUBXWithChecksum(msgClass, msgID, payload, len);
+    if (awaitAck(msgClass, msgID, 1200)) {
+        log_i("u-blox cfg OK: %s", what);
+    } else {
+        /* NAK or silence. Either way the receiver is not running what we think
+         * it is, which is worth an error rather than a shrug. */
+        LOG_ERROR_FORMATTED("u-blox cfg REJECTED/no ACK: %s (0x%02X/0x%02X)",
+                            what, msgClass, msgID);
+    }
 }
 
 void UbloxGpsProvider::sendUBXWithChecksum(uint8_t msgClass, uint8_t msgID, uint8_t* payload, uint16_t len) {
@@ -382,7 +448,16 @@ bool UbloxGpsProvider::update() {
             if (_rxCkA == _ckA && b == _ckB) {
                 if (_rxClass == 0x01 && _rxId == 0x07 && _rxLen >= 92) {
                     applyNavPvt(_rxBuf);
-                    newData = true;
+                    _pvtFrames++;
+                    /* Return on EVERY completed frame instead of draining the
+                     * buffer and keeping only the last. This object holds one
+                     * fix, so a caller that polls slower than 25Hz used to lose
+                     * every frame but the newest — silently, upstream of the log
+                     * queue, which is why the health counter never saw it.
+                     * Callers now loop on update() and get all of them; the
+                     * unread bytes simply stay in the UART buffer. */
+                    _rxState = 0;
+                    return true;
                 }
             } else if ((++_checksumErrors % 64) == 1) {
                 /* Rate-limited: a baud or wiring fault produces these by the
