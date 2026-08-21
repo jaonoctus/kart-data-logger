@@ -201,8 +201,9 @@ extern "C" lv_display_t *bsp_display_start_with_config(const bsp_display_cfg_t *
     const uint32_t buf_bytes = buf_px * 2;
     void *b1 = heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     void *b2 = heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!b1) b1 = heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM);
-    if (!b2) b2 = heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM);
+    bool psram_fallback = false;
+    if (!b1) { b1 = heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM); psram_fallback = true; }
+    if (!b2) { b2 = heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM); psram_fallback = true; }
     if (!b1 || !b2) {
         Serial.println("[DisplayGFX] draw buffer alloc failed");
         return nullptr;
@@ -210,16 +211,13 @@ extern "C" lv_display_t *bsp_display_start_with_config(const bsp_display_cfg_t *
     /* Both internal is the intended outcome, so it is log_i — warning on the
      * healthy path just trains you to ignore the alert banner. A buffer that
      * fell back to PSRAM is the real event: LVGL renders into these every frame
-     * and PSRAM is markedly slower, so it earns a warning. */
-    const bool b1_int = esp_ptr_internal(b1);
-    const bool b2_int = esp_ptr_internal(b2);
-    if (b1_int && b2_int) {
-        log_i("[GFX] draw bufs: both internal (%u bytes each)", (unsigned)buf_bytes);
+     * and PSRAM is markedly slower, so it earns a warning. Which of the two fell
+     * back is not worth reporting: PSRAM on either costs the same frame time. */
+    if (psram_fallback) {
+        log_w("[GFX] draw bufs FELL BACK TO PSRAM (%u bytes each) — internal DRAM "
+              "exhausted, expect slower rendering", (unsigned)buf_bytes);
     } else {
-        log_w("[GFX] draw bufs FELL BACK TO PSRAM: b1=%s b2=%s (%u bytes each) — "
-              "internal DRAM exhausted, expect slower rendering",
-              b1_int ? "internal" : "psram",
-              b2_int ? "internal" : "psram", (unsigned)buf_bytes);
+        log_i("[GFX] draw bufs: both internal (%u bytes each)", (unsigned)buf_bytes);
     }
     lv_display_set_buffers(s_disp, b1, b2, buf_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
 

@@ -291,11 +291,6 @@ void syncUI() {
 
         uiHelper.setGx(telemetry.gForceX);
         uiHelper.setGy(telemetry.gForceY);
-
-        /* The log enqueue used to live here. It now happens per-frame in loop(),
-         * where every NAV-PVT is seen — this path only runs once per UI pass and
-         * so could never carry more than one frame of the 25. */
-
         uiHelper.setSpeed(telemetry.speedKmph);
 
         // 8. Update GPS Satellite Indicator
@@ -386,10 +381,11 @@ void setup() {
 #endif
     Serial.setDebugOutput(true);
 
-    // FIRST: everything logged from here on is captured for the log screen and,
-    // once the card mounts, written to /dash.log. Installed before the boot
-    // banner so a GPS or SD failure at the track has an account on the device
-    // rather than only on a USB port nothing is attached to.
+    // FIRST: everything logged from here on is captured into the RAM ring behind
+    // the log screen (and, in an -D ENABLE_LOG_TO_SD build, written to /dash.log
+    // once the card mounts). Installed before the boot banner so a GPS or SD
+    // failure at the track has an account on the device rather than only on a
+    // USB port nothing is attached to.
     logBuffer.begin();
 
     log_i("--- KART DISPLAY BOOTING ---");
@@ -612,8 +608,9 @@ void loop() {
     // lock would block this task and trip the watchdog.
     sessionBrowser.service();
 
-    // Flush captured log lines to SD. Here for the same reason as the line
-    // above: it touches the card, and must not run under the display lock.
+    // Flush captured log lines to SD — a no-op unless built with
+    // -D ENABLE_LOG_TO_SD. Here for the same reason as the line above: when it
+    // is enabled it touches the card, so it must not run under the display lock.
     logBuffer.service();
 
 #if defined(ENABLE_IMU)
@@ -712,18 +709,6 @@ void loop() {
         // QSPI flush health: report dropped frames and the worst bus-idle wait in
         // the last second, then reset the stall high-water mark. A blink should line
         // up with either a frame_drops increment (hard skip) or a high max_stall.
-
-        /* Enqueue HERE, once per frame. This used to live in syncUI() behind the
-         * newTelemetryAvailable flag, which is a one-slot handoff: whatever
-         * arrived between UI passes was overwritten and never reached the queue.
-         * Zero timeout still, so a full queue drops the row rather than blocking
-         * the UI — but now that is a real drop the health counter can see. */
-        if (LogManager::logQueue != NULL && logManager.isSessionActive()) {
-            if (xQueueSend(LogManager::logQueue, &telemetry, 0) != pdTRUE) {
-                logManager.noteDroppedFrame();
-            }
-        }
-
         static uint32_t lastFrameDrops = 0;
         uint32_t drops = lvgl_port_frame_drops;
         uint32_t stallUs = lvgl_port_max_stall_us;
@@ -736,32 +721,6 @@ void loop() {
         }
 
         // Log rows the queue had no room for. Also persisted to /health.csv by the
-    /* GPS heartbeat. "GPS 0" on the dash says a fix is missing but not why, and
-     * the difference matters: satellites climbing with fixType stuck at 0 is a
-     * sky-view/cold-start problem and will come good if left alone; zero
-     * satellites for minutes is an antenna, wiring or config problem and never
-     * will. Logged unconditionally so a session that never got a fix leaves an
-     * account of itself on the card. */
-    static uint32_t lastGpsLogMs   = 0;
-    static uint32_t lastGpsFrames  = 0;
-    if (now - lastGpsLogMs >= 5000) {
-        /* Measured NAV-PVT rate, not the rate we asked for. CFG-RATE is accepted
-         * without complaint even when the receiver cannot sustain it, so the only
-         * way to know we are really getting 25Hz is to count frames and divide. */
-        uint32_t frames  = gps.getFrameCount();
-        uint32_t elapsed = now - lastGpsLogMs;
-        float    hz      = lastGpsLogMs && elapsed
-                             ? (frames - lastGpsFrames) * 1000.0f / (float)elapsed
-                             : 0.0f;
-        lastGpsLogMs  = now;
-        lastGpsFrames = frames;
-
-        GpsFixInfo fi = gps.getFixInfo();
-        log_i("GPS: sats=%lu fix=%u ok=%d pdop=%.1f hAcc=%.1fm rate=%.1fHz",
-              (unsigned long)gps.getSatellites(), (unsigned)fi.fixType,
-              fi.gnssFixOK ? 1 : 0, fi.pdop, fi.hAccM, hz);
-    }
-
         // log task, since serial is no use with the dash bolted to a steering wheel.
         static uint32_t lastLogQueueDrops = 0;
         uint32_t logDrops = logManager.droppedFrames();
@@ -794,8 +753,8 @@ void loop() {
         uiHelper.setDisplay(cachedDisplayBattPct);
     }
 
-    // Alert banner. setAlert() early-outs when the counts are unchanged-and-zero,
-    // so this is cheap enough to run every pass.
+    // Alert banner. setAlert() self-filters on an unchanged pair of counts, so
+    // this is cheap enough to run every pass.
     uiHelper.setAlert(logBuffer.errorCount(), logBuffer.warningCount());
 
 #if defined(ENABLE_WEB_PORTAL)

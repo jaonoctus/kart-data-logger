@@ -144,12 +144,6 @@ void UiHelper::init() {
     bsp_display_unlock();
 }
 
-/* Normally injected by platformio.ini from `git describe`. Guarded so the file still
- * compiles if something builds it without the flag. */
-#ifndef FW_VERSION
-#define FW_VERSION "unknown"
-#endif
-
 /* Firmware version, right-aligned in the setup screen's header bar.
  *
  * The header is the only free space on that screen: ui_panelsetupbuttons is y=66
@@ -172,7 +166,7 @@ void UiHelper::build_version_label(void) {
     lv_obj_set_align(lbl, LV_ALIGN_RIGHT_MID);
     lv_label_set_text(lbl, FW_VERSION);
     // Muted grey: it should be readable when looked for and ignorable otherwise.
-    lv_obj_set_style_text_color(lbl, C(0x6B7280), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(lbl, C(T.muted), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(lbl, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(lbl, &ui_font_BarlowCondensedBold22, LV_PART_MAIN | LV_STATE_DEFAULT);
 }
@@ -640,20 +634,29 @@ void UiHelper::build_alert_banner(void) {
 void UiHelper::setAlert(uint16_t errors, uint16_t warnings) {
     if (!s_alert) return;
 
-    if (errors == 0 && warnings == 0) {
+    /* Self-filtering, like the other setters here — and load-bearing rather than
+     * tidiness: loop() calls this every pass, the counts only move when
+     * something logs, and set_text_fmt reallocs the label and invalidates the
+     * banner rect on every call. Without this the dash repaints the same string
+     * at loop rate for the whole session after a single warning. */
+    static uint16_t s_last_err = 0xFFFF, s_last_warn = 0xFFFF;
+    if (errors == s_last_err && warnings == s_last_warn) return;   /* no-op */
+    s_last_err  = errors;
+    s_last_warn = warnings;
+
+    if (!errors && !warnings) {
         lv_obj_add_flag(s_alert, LV_OBJ_FLAG_HIDDEN);
         return;
     }
 
     /* Errors dominate the text when present — a warning count next to a real
      * failure buries the thing that matters. */
-    if (errors) lv_label_set_text_fmt(s_alert_lbl, "%u ERROR%s  -  TAP FOR LOG",
-                                      (unsigned)errors, errors == 1 ? "" : "S");
-    else        lv_label_set_text_fmt(s_alert_lbl, "%u WARNING%s  -  TAP FOR LOG",
-                                      (unsigned)warnings, warnings == 1 ? "" : "S");
+    const bool     err = errors != 0;
+    const uint16_t n   = err ? errors : warnings;
+    lv_label_set_text_fmt(s_alert_lbl, "%u %s%s  -  TAP FOR LOG",
+                          (unsigned)n, err ? "ERROR" : "WARNING", n == 1 ? "" : "S");
 
-    lv_obj_set_style_border_color(s_alert, C(errors ? T.bad : T.accent),
-                                  LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(s_alert, C(err ? T.bad : T.accent), 0);
     lv_obj_remove_flag(s_alert, LV_OBJ_FLAG_HIDDEN);
 }
 
