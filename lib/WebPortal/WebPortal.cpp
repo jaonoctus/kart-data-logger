@@ -126,7 +126,12 @@ static void hList() {
         if (name.startsWith(".")) { f.close(); continue; }   /* skip dotfiles */
         if (!first) j += ",";
         first = false;
+        /* getLastWrite() is only meaningful once LogManager::syncClockFromTelemetry()
+         * has run: the ESP32 boots at epoch 0, so anything the card received before
+         * the first GPS fix is stamped 1970. Sent raw — the page decides what to do
+         * with a pre-2021 value rather than this handler inventing a placeholder. */
         j += "{\"name\":\"" + jsonEscape(name) + "\",\"size\":" + String((uint32_t)f.size()) +
+             ",\"mtime\":" + String((uint32_t)f.getLastWrite()) +
              ",\"dir\":" + String(f.isDirectory() ? "true" : "false") + "}";
         f.close();
     }
