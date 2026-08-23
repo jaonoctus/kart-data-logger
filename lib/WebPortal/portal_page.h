@@ -30,7 +30,7 @@ h1{font-size:16px;margin:0;letter-spacing:.5px}h2{font-size:13px;margin:0 0 10px
 .card{background:var(--sf);border:1px solid var(--ru);border-radius:8px;padding:14px;margin-bottom:18px}
 .f{display:flex;justify-content:space-between;align-items:center;padding:7px 8px;border-radius:5px;cursor:pointer;gap:8px}
 .f:hover{background:var(--sf2)}.f.sel{background:var(--sf2);outline:1px solid var(--ac)}
-.f .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.f .s{color:var(--mut);font-size:12px;flex:none}
+.f .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.f .s,.f .t{color:var(--mut);font-size:12px;flex:none;font-variant-numeric:tabular-nums}
 a,button{color:var(--fg);background:var(--sf2);border:1px solid var(--ru);border-radius:5px;padding:5px 9px;font-size:12px;cursor:pointer;text-decoration:none;font-family:inherit}
 button:hover,a:hover{border-color:var(--ac)}button:disabled{opacity:.4;cursor:default}
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
@@ -67,6 +67,11 @@ addEventListener('resize',()=>{clearTimeout(rt);
 const msg=(t,e)=>{const m=$('#msg');m.textContent=t;m.className=e?'err':'';m.style.display=t?'block':'none'};
 const fmt=ms=>{if(!isFinite(ms))return'—';const m=Math.floor(ms/60000),s=(ms%60000)/1000;return m?`${m}:${s.toFixed(3).padStart(6,'0')}`:s.toFixed(3)};
 const kb=b=>b<1024?b+' B':b<1048576?(b/1024).toFixed(0)+' KB':(b/1048576).toFixed(1)+' MB';
+/* 1609459200 is LogManager's kMinValidGpsEpochMs in seconds (2021-01-01). Below it the
+   dash had no fix yet and the mtime is boot-epoch noise, not a date. Card stores UTC;
+   shown in the viewer's zone, which is what you want reading this on a phone trackside. */
+const ts=s=>{if(!s||s<1609459200)return'\u2014';const d=new Date(s*1000),p=n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`};
 
 // ---- device -------------------------------------------------------------
 // /api/info is cheap (CSD register). Used/free space needs f_getfree(), which
@@ -91,7 +96,9 @@ function list(){
       const row=document.createElement('div'); row.className='f'+(f.name===sel?' sel':'');
       const n=document.createElement('span'); n.className='n'; n.textContent=f.name;
       const s=document.createElement('span'); s.className='s'; s.textContent=kb(f.size);
-      row.append(n,s);
+      const t=document.createElement('span'); t.className='t'; t.textContent=ts(f.mtime);
+      t.title=f.mtime?'modified '+new Date(f.mtime*1000).toISOString():'no GPS fix when written';
+      row.append(n,t,s);
       row.onclick=e=>{ if(e.target.tagName==='A'||e.target.tagName==='BUTTON')return;
         if(f.name.toLowerCase().endsWith('.csv')){sel=f.name;list();load(f.name)}
         else msg('Only .csv logs can be analysed. Use Get to download.') };
