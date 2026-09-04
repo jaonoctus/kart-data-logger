@@ -168,8 +168,32 @@ epoch,speed,totalGForce,gForceX,gForceY,steering_angle,sats,lat,lng
 2. Open it in VSCode with PlatformIO.
 3. Edit the UI using the SquareLine Studio project files in `UIDesign/`.
 4. Export the UI to `/lib/ui/` and let `fix_stride.py` patch LVGL image metadata during build.
-5. Flash the firmware: `pio run -e display_gfx -t upload`
+5. Flash the firmware: `tools/flash.sh` (see below).
 6. Insert a FAT32 microSD card into the display. A default `config.ini` is created on first boot.
+
+### Flashing
+
+`upload_port` in `platformio.ini` is pinned to `/dev/cu.usbmodem1101`, which is one
+machine's enumeration — the same board comes up under a different name elsewhere and
+`pio run -t upload` then fails on a port that isn't there. `tools/flash.sh` finds the
+board by USB `VID:PID` instead and passes it with `--upload-port`, which overrides the
+pinned value:
+
+```bash
+tools/flash.sh              # default env, confirm, then upload
+tools/flash.sh -m           # ...and open the serial monitor afterwards
+tools/flash.sh -e display   # the esp_lcd fallback env
+tools/flash.sh -p /dev/cu.usbmodem101   # skip discovery
+tools/flash.sh -y           # no confirmation prompt (also FLASH_YES=1)
+tools/flash.sh -- -v        # anything after -- goes to `pio run`
+```
+
+Before uploading it prints the port, env and `FW_VERSION`, and warns if the tree is
+dirty — `FW_VERSION` is `git describe --tags --always --dirty` and shows on the setup
+screen, so it is easy to flash uncommitted edits by accident. If more than one board is
+attached it lists the candidates and asks for `-p`.
+
+`pio run -e display_gfx -t upload` still works if the pinned port happens to be right.
 
 ## Dormant libraries
 
